@@ -6,12 +6,24 @@ The skill bundles Python helpers for tmux, an isolated Claude runtime, and a loc
 
 ## Requirements and installation
 
+On Linux or macOS, install or update with one command:
+
+```sh
+curl -fsSL https://github.com/sintoniastrategy/agent-review/releases/latest/download/install.sh | bash
+```
+
+The installer needs `curl` and Python 3.9+. It downloads the latest stable release, verifies the archive's SHA-256, and stores it under `~/.local/share/agent-review/releases/VERSION`. The `current` symlink selects the installed version. Skill symlinks are created in `~/.agents/skills/local-review` for [Codex](https://developers.openai.com/codex/skills/) and `~/.claude/skills/local-review` for [Claude Code](https://code.claude.com/docs/en/skills). An existing unrelated skill is left untouched and reported. Start a new author-agent session after the first installation and ask it to use local-review.
+
+At skill entry, the author checks for updates at most once per 24 hours. After a successful update it reads the new instructions and pins the concrete version path for the invocation. Already running author workflows and reviewers keep their previous version; installed versions are retained. There is no system service, timer, API token or `gh` requirement. A sandbox or network failure is reported with the manual command above; it does not remove the installed version. Running the installation command manually bypasses the daily check interval.
+
+Treat managed release files as versioned software. Keep personal settings in worktree `configure` overrides and custom presets outside the release directory so upgrades do not replace your preferences. The installer does not install Docker, tmux or Claude credentials. The skill checks these before review:
+
 - Python 3.9+, Git and tmux on the host. The helpers use only Python's standard library.
 - A local Linux Docker Engine, rootless or rootful without userns-remap, accessible to your user. Podman and userns-remap are not supported.
 - A Claude subscription credentials file, normally `~/.claude/.credentials.json`. Supply an existing authenticated file; the helper does not perform an interactive login.
 - Network access to build the runtime and use Claude. The first preparation downloads a pinned, checksum-verified Claude CLI; no existing Claude executable, aliases, pip packages or compiler are needed.
 
-Copy the **whole** [local-review bundle](skills/local-review), including its presets and runtime files, into the skills directory supported by your author agent. That directory depends on the author application. From this repository, replace the destination below with its absolute path:
+For an explicitly manual installation without automatic updates, copy the **whole** [local-review bundle](skills/local-review), including its presets and runtime files, into the skills directory supported by your author agent. From this repository, replace the destination below with its absolute path:
 
 ```sh
 AGR_SKILLS_DIR=/absolute/path/to/your/agents/skills

@@ -1,5 +1,9 @@
 Follow [the author workflow](../SKILL.md) for review authorization, discussion and approved fix batches. This reference describes the helper operations used by that workflow.
 
+Managed installation and manual updating use `curl -fsSL https://github.com/sintoniastrategy/agent-review/releases/latest/download/install.sh | bash`. The installer downloads stable release assets anonymously, checks the archive checksum, retains versions in ~/.local/share/agent-review/releases and atomically switches current after a successful installation. User skill symlinks point through current. Existing unrelated skills are not overwritten. Personal settings should use worktree configure overrides or external preset paths; managed release files are replaced by new versions.
+
+At the start of an invocation, `python3 /path/to/local-review/scripts/install_skill.py --check` checks at most once per 24 hours and prints the concrete Skill and Helper paths. Read those instructions and keep those paths for this invocation, including when current changes later. A source checkout or manual bundle copy is not updated. Failures are advisory for automatic checks and print the manual update command for a normal terminal; explicit installation returns a failure exit status. Do not bypass the user's recovery rules. The installer does not request sandbox escalation, install packages or launch a reviewer. For an isolated installation test, pass `--home /temporary/user` to install_skill.py, or pass `-s -- --home /temporary/user` to the bootstrap bash command.
+
 The helper uses Python 3.9+ and its standard library on Linux or macOS. It needs Git, tmux, Docker by default, and a Claude subscription credentials file. The bundle manages its own pinned Claude binary. The human normally chooses the workflow in conversation; these commands are the author agent's implementation reference. Commands return programmatically generated JSON by default; prepare, start and status accept --human for concise text, and watch streams human-readable updates. Markdown export and publication acknowledgments are also plain text; agents write findings as Markdown, never JSON.
 
 ```sh
@@ -42,7 +46,7 @@ The base must already exist locally. The helper never fetches it. Source snapsho
 | `stop` / `reopen` | `--reason TEXT` | Change cycle state without discarding pending items or launching a model. |
 | `export` | optional repeated `--finding ID`, `--format json/markdown` | Export generated context or selected decisions; no network operations. |
 
-The installed skill's `defaults.ini` is the editable default for all worktrees using that installation:
+The installed skill's `defaults.ini` supplies defaults for all worktrees using that installation. It can be edited in a manual copy; for managed releases use configure overrides and external presets to retain preferences across updates:
 
 ```ini
 [review]
@@ -164,6 +168,8 @@ Scoped verification, using fake reviewer processes and isolated tmux sockets, wi
 ```sh
 python3 -m unittest tests.test_store tests.test_source tests.test_reporting tests.test_runner tests.test_tmux tests.test_cli tests.test_runtime tests.test_progress tests.test_configuration tests.test_flow tests.test_names
 ```
+
+Installer and release packaging checks are scoped separately: `python3 -m unittest tests.test_install`. They use temporary homes and local download fixtures, never the user's actual skill directories or a model. Build release assets with `python3 scripts/build_release.py v0.1.0 /new/output/directory`; it creates agent-review.tar.gz, release.json, install.sh and install_skill.py without publishing. Upload these assets together when creating a stable GitHub Release, keeping a published version immutable. The SHA-256 checks transfer integrity against the release manifest; it is not an independent signature.
 
 The Docker home check is opt-in and uses an existing local image built from the current skill. It reads the helper and release manifest from that image:
 
