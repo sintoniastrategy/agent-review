@@ -73,20 +73,23 @@ def install_binary(destination):
 
 def configuration(repo, values=None, global_values=None):
     values = review_config.effective(repo, values, global_values)
-    mode = values.get("runtime", "docker")
+    mode = values['runtime']
     if mode not in {"docker", "native"}:
         raise ReviewError("Runtime must be docker or native")
-    credentials = Path(values.get("credentials_file", str(Path.home() / ".claude" / ".credentials.json"))).expanduser().resolve()
-    auth = values.get('auth', 'auto')
+    credentials = Path(values['credentials_file'] or Path.home() / '.claude/.credentials.json').expanduser()
+    if not credentials.is_absolute():
+        credentials = Path(repo) / credentials
+    credentials = credentials.resolve()
+    auth = values['auth']
     if auth not in {'auto', 'file', 'keychain'}:
         raise ReviewError('Auth must be auto, file or keychain')
     if auth == 'keychain' and (platform.system() != 'Darwin' or mode != 'native'):
-        raise ReviewError('Keychain authentication requires native macOS; use --no-docker or --auth file with --credentials-file')
-    name = values.get("window_name")
+        raise ReviewError('Keychain authentication requires native macOS; set runtime = native or use auth = file with credentials_file in config.ini')
+    name = values['window_name'] or None
     if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(character) < 33 or ord(character) > 126 for character in name)):
         raise ReviewError("Window name must contain 1 to 80 ASCII characters without whitespace")
     if auth == 'auto':
-        auth = 'keychain' if platform.system() == 'Darwin' and mode == 'native' and 'credentials_file' not in values else 'file'
+        auth = 'keychain' if platform.system() == 'Darwin' and mode == 'native' and not values['credentials_file'] else 'file'
     return {"runtime": mode, 'auth': auth, "credentials_file": str(credentials), "window_name": name}
 
 
@@ -110,7 +113,7 @@ def check_credentials(settings):
             raise ReviewError('Claude subscription login was not found in the macOS Keychain; sign in to Claude Code with its default profile first')
         return 'macOS Keychain entry present; subscription checked by managed Claude before launch'
     if not Path(settings['credentials_file']).is_file():
-        raise ReviewError('Supply a subscription credentials file with configure --credentials-file: ' + settings['credentials_file'] + '; native macOS can use Keychain with configure --no-docker --auth keychain')
+        raise ReviewError('Set credentials_file in config.ini to an existing subscription credentials file: ' + settings['credentials_file'] + '; native macOS can use runtime = native with auth = keychain')
     return 'credentials file present; subscription checked by managed Claude before launch'
 
 
@@ -159,7 +162,7 @@ def docker_connection():
     if not executable:
         if shutil.which('podman'):
             raise ReviewError('Podman is not supported yet; use Docker Engine without userns-remap')
-        raise ReviewError('Docker is required by default; select configure --no-docker explicitly to use native mode with weaker isolation')
+        raise ReviewError('Docker is required by default; explicitly set runtime = native in config.ini to use native mode with weaker isolation')
     executable = str(Path(executable).absolute())
     keys = ('HOME', 'PATH', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
             'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH',

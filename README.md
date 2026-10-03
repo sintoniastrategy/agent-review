@@ -23,20 +23,22 @@ The skill checks prerequisites, explains each step and recommends what to do nex
 
 Stop whenever you've fixed enough. Findings, decisions and rechecks stay in readable Markdown files under `.agr/`. No PR, GitHub Actions, MCP server or database required. Orchestration runs locally; Claude inference still uses Anthropic's service.
 
-## Compared with other review tools
+## Which review tool should I use?
 
-A comparison of documented workflows, checked October 2026:
+**Choose SST when review takes several rounds and you want to decide what gets fixed with the agent that wrote the code.** It keeps findings, your decisions, actual fixes and reviewer confirmations connected across passes.
 
-| Tool | What it offers |
-| --- | --- |
-| [Codex built-in `/review`](https://learn.chatgpt.com/docs/codex/cli) | Prioritized findings for a branch, commit or uncommitted changes, without modifying your working tree. |
-| [Anthropic's Code Review plugin](https://claude.com/marketplace/plugins/code-review) | Parallel specialist reviews with confidence filtering and findings posted to GitHub PRs. |
-| [Garry Tan's gstack `/review`](https://github.com/garrytan/gstack/blob/main/review/SKILL.md) | Pre-landing review with specialist passes, automatic or approved fixes, repeat reviews and saved skip decisions. |
-| [obra's Superpowers](https://github.com/obra/superpowers/tree/main/skills/requesting-code-review) | Review subagents and feedback-handling skills within a broader planning, TDD and development workflow. |
-| [Everything Claude Code / ECC](https://github.com/affaan-m/ECC/tree/main/commands) | Local and PR review checklists, specialist review agents and orchestrated verification within a large toolkit. |
-| **SST Agent Review** | A focused review/fix loop: your existing author session, a separate interactive reviewer, human decisions and a local journal across passes. |
+| What you need | Choose | Why it fits |
+| --- | --- | --- |
+| A quick second opinion on a diff | [Codex built-in `/review`](https://learn.chatgpt.com/docs/codex/cli) | Start from your existing Codex session; get prioritized findings without setting up SST. |
+| Review comments where your team already discusses PRs | [Anthropic's Code Review plugin](https://claude.com/marketplace/plugins/code-review) | Specialist reviewers filter findings by confidence and post feedback to GitHub. |
+| A broad pre-landing workflow that also applies fixes | [Garry Tan's gstack](https://github.com/garrytan/gstack/blob/main/review/SKILL.md) | Specialist passes, automatic or approved fixes, repeat reviews and saved skip decisions. A good fit if you want that broader workflow. |
+| Review integrated into planning, TDD and implementation | [obra's Superpowers](https://github.com/obra/superpowers/tree/main/skills/requesting-code-review) | Review subagents and feedback-handling rules are part of its development methodology. |
+| A large toolkit to build your own agent workflow | [Everything Claude Code / ECC](https://github.com/affaan-m/ECC/tree/main/commands) | Choose among local/PR checklists, specialist review agents and orchestrated verification. |
+| Work through findings, choose fixes and verify them over several passes | **SST Agent Review** | Keep your author session and its context; get guided discussion, selected fix batches and a durable local record of what was decided and checked. |
 
-Choose SST when you want to work through findings with the agent that wrote the code and retain the reasoning behind every fix or skip.
+For example: a reviewer returns 40 findings. With SST, your coding agent discusses the critical ones, groups the rest into tables, records what you skip and why, and fixes the items you approve. The next reviewer sees those decisions and fix diffs. You can tell an implemented fix apart from one the reviewer has confirmed.
+
+For a small, one-off review, the built-in option is simpler. SST earns its extra tmux/runtime setup when you would otherwise manage repeated reviews and their decisions by hand. This comparison is about workflow; we have not benchmarked bug-finding accuracy. Linked workflows checked October 2026.
 
 ## Installation
 
@@ -58,10 +60,47 @@ cp -R skills/agent-review ~/.agents/skills/sst-agent-review
 
 For Claude Code, use `~/.claude/skills` instead. Manual copies do not auto-update.
 
-## Make it yours
+## Configuration
 
-Defaults: **Claude Opus, xhigh effort, full review**. Just ask for Sonnet, a different effort, a review of changes since the last pass, or a different discussion style. Claude is currently the only launched reviewer; Codex can be your author agent.
+**Edit INI files directly, or ask your coding agent to edit them.** Create the directory/file if needed. The skill reads these layers in order; later values override earlier ones:
 
-[Prompt presets](skills/agent-review/presets/default) separate review criteria, reviewer policy, follow-ups, discussion and fixes. Personal and worktree overrides survive managed updates.
+| File | Applies to |
+| --- | --- |
+| [Bundled `defaults.ini`](skills/agent-review/defaults.ini) | Shipped defaults; replaced when the skill updates |
+| `~/.local/share/sst-agent-review/config.ini` | Your defaults for all projects |
+| `<worktree>/.agr/config.ini` | This worktree only; ignored by Git |
+
+For example, put this in your personal file to use Sonnet with Docker:
+
+```ini
+[review]
+model = sonnet
+effort = medium
+runtime = docker
+```
+
+To use native mode in one project, put this in its `.agr/config.ini`:
+
+```ini
+[review]
+runtime = native
+auth = auto
+```
+
+Model and effort still inherit from your personal file. `auth = auto` uses the default Keychain login on native macOS, otherwise a credentials file. Set `credentials_file = /absolute/path/to/credentials.json` to choose a file explicitly. Delete a key to inherit it again.
+
+All supported keys are in [defaults.ini](skills/agent-review/defaults.ini): `agent`, `model`, `effort`, `preset`, `scope`, `runtime`, `auth`, `credentials_file`, `window_name`. Shipped defaults are **Claude Opus, xhigh effort, full review, Docker**. Only Claude can be launched as reviewer; Codex can be your author agent. There is no `configure` command.
+
+Ask the skill to check settings, or run this from the worktree with your actual local base:
+
+```sh
+python3 ~/.local/share/sst-agent-review/current/agent-review/scripts/review.py preflight --base main --human
+```
+
+It shows effective settings and checks prerequisites without starting a reviewer. Preparation flags can override model, effort, preset and scope for one run. Existing prepared rounds retain their settings.
+
+**Upgrading from JSON configuration:** convert each `config.json` to `config.ini` at the same location. Write `[review]`, then one `key = value` per line, without JSON braces, commas or quotes. A legacy file without an INI replacement produces a migration error. Once the INI exists, only it is used. Review journal files are unaffected.
+
+[Prompt presets](skills/agent-review/presets/default) separate review criteria, reviewer policy, follow-ups, discussion and fixes. Keep custom presets outside the managed installation; set `preset = /absolute/path/to/your/preset` in your INI. Personal and worktree settings survive updates.
 
 [Skill instructions](skills/agent-review/SKILL.md) | [Commands, configuration and recovery](skills/agent-review/references/commands.md)

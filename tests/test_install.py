@@ -214,12 +214,12 @@ class InstallTests(unittest.TestCase):
 
     def test_global_preferences_survive_install_and_update(self):
         self.root.mkdir(parents=True)
-        config = self.root / 'config.json'
-        config.write_text('{"model":"sonnet"}\n')
+        config = self.root / 'config.ini'
+        config.write_text('[review]\nmodel = sonnet\nruntime = native\n')
         self.install()
         self.release('v0.1.1')
         self.install()
-        self.assertEqual(config.read_text(), '{"model":"sonnet"}\n')
+        self.assertEqual(config.read_text(), '[review]\nmodel = sonnet\nruntime = native\n')
 
     def test_release_assets_are_reproducible_and_contain_only_the_skill(self):
         first = builder.build(ROOT, 'v0.1.0', self.directory / 'first')
@@ -238,11 +238,21 @@ class InstallTests(unittest.TestCase):
         skill = self.install()
         self.assertIn('name: sst-agent-review\n', (skill / 'SKILL.md').read_text())
         helper = self.home / '.agents/skills/sst-agent-review/scripts/review.py'
-        result = subprocess.run([sys.executable, str(helper), 'configure', '--global', '--model', 'sonnet'],
+        repo = self.directory / 'project'
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True, capture_output=True)
+        preset = self.directory / 'custom-preset'
+        for name in ('reviewer/review.md', 'reviewer/policy.md', 'reviewer/followup.md', 'author/discuss.md', 'author/fix.md'):
+            path = preset / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('Installed custom instructions: ' + name + '\n')
+        config = self.root / 'config.ini'
+        original = '[review]\npreset = ' + str(preset) + '\n'
+        config.write_text(original)
+        result = subprocess.run([sys.executable, str(helper), '--repo', str(repo), 'instructions', 'discuss'],
                                 env={**os.environ, 'HOME': str(self.home)}, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)['config'], str(self.root / 'config.json'))
-        self.assertEqual(json.loads((self.root / 'config.json').read_text()), {'model': 'sonnet'})
+        self.assertIn('Installed custom instructions: author/discuss.md', result.stdout)
+        self.assertEqual(config.read_text(), original)
 
     def test_bootstrap_forwards_arguments_and_cleans_failed_download(self):
         binary = self.directory / 'bin'

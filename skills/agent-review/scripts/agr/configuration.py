@@ -2,7 +2,7 @@ import configparser
 from pathlib import Path
 import re
 
-from . import ReviewError, read_json
+from . import ReviewError
 
 
 SKILL = Path(__file__).resolve().parents[2]
@@ -18,44 +18,56 @@ PROMPT_FILES = {
 
 def local(repo, values=None):
     if values is None:
-        path = Path(repo) / '.agr' / 'config.json'
-        values = read_json(path) if path.is_file() else {}
+        values = read_ini(Path(repo) / '.agr' / 'config.ini')
     if not isinstance(values, dict) or set(values) - set(REVIEW_KEYS + RUNTIME_KEYS):
-        raise ReviewError('Replace legacy launcher configuration with configure; user launchers are no longer supported')
+        raise ReviewError('Configuration accepts only: ' + ', '.join(REVIEW_KEYS + RUNTIME_KEYS))
     return dict(values)
 
 
 def global_path():
-    return Path.home() / '.local/share/sst-agent-review/config.json'
+    return Path.home() / '.local/share/sst-agent-review/config.ini'
 
 
 def global_settings(values=None):
     if values is None:
-        path = global_path()
-        values = read_json(path) if path.is_file() else {}
+        values = read_ini(global_path())
     return local(None, values)
 
 
 def effective(repo, values=None, global_values=None):
-    return {**global_settings(global_values), **local(repo, values)}
+    return {**defaults(), **global_settings(global_values), **local(repo, values)}
 
 
-def defaults():
-    path = SKILL / 'defaults.ini'
+def read_ini(path, required=False):
+    if not required and not path.exists():
+        legacy = path.with_suffix('.json')
+        if legacy.exists():
+            raise ReviewError('Legacy configuration found: ' + str(legacy) + '. Convert its settings to key = value entries under [review] in ' + str(path) + '; see README Configuration. JSON configuration is no longer supported.')
+        return {}
     parser = configparser.ConfigParser(interpolation=None)
     try:
         with path.open(encoding='utf-8') as source:
             parser.read_file(source)
-    except (OSError, configparser.Error) as error:
-        raise ReviewError('Cannot read skill defaults: ' + str(path) + ': ' + str(error)) from error
-    if parser.sections() != ['review'] or parser.defaults() or set(parser['review']) != set(REVIEW_KEYS):
-        raise ReviewError('defaults.ini requires one [review] section with ' + ', '.join(REVIEW_KEYS))
-    return dict(parser['review'])
+    except (OSError, UnicodeError, configparser.Error) as error:
+        raise ReviewError('Cannot read configuration: ' + str(path) + ': ' + str(error)) from error
+    if parser.sections() != ['review'] or parser.defaults():
+        raise ReviewError(str(path) + ' requires one [review] section and no [DEFAULT] values')
+    values = dict(parser['review'])
+    keys = set(REVIEW_KEYS + RUNTIME_KEYS)
+    unknown = set(values) - keys
+    if unknown:
+        raise ReviewError(str(path) + ': unknown settings: ' + ', '.join(sorted(unknown)))
+    if required and set(values) != keys:
+        raise ReviewError(str(path) + ' requires settings: ' + ', '.join(sorted(keys)))
+    return values
+
+
+def defaults():
+    return read_ini(SKILL / 'defaults.ini', required=True)
 
 
 def load_review(repo, overrides=None, values=None, global_values=None):
-    settings = defaults()
-    settings.update({key: value for key, value in effective(repo, values, global_values).items() if key in REVIEW_KEYS})
+    settings = {key: value for key, value in effective(repo, values, global_values).items() if key in REVIEW_KEYS}
     settings.update({key: value for key, value in (overrides or {}).items() if value is not None})
     for key in REVIEW_KEYS:
         value = settings[key]

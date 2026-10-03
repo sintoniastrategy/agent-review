@@ -63,8 +63,7 @@ class CLITests(RepositoryTest):
             return execute(parser().parse_args(["--repo", str(self.repo), "prepare"]))
 
     def test_docker_is_the_default_and_configuration_is_local(self):
-        result = self.command("configure", "--window-name", "repo/feature")
-        self.assertEqual(result["runtime"], "docker")
+        self.write_settings({'window_name': 'repo/feature'})
         prepared = self.prepare_command()
         self.assertEqual(prepared["runtime"]["mode"], "docker")
         self.assertEqual(prepared["runtime"]["window_name"], "repo/feature")
@@ -74,22 +73,30 @@ class CLITests(RepositoryTest):
         self.assertEqual(self.command("cancel", "r01-claude1")["status"], "interrupted")
 
     def test_runtime_is_frozen_for_the_prepared_round_and_native_is_explicit(self):
-        self.command("configure", "--no-docker")
+        self.write_settings({'runtime': 'native'})
         prepared = self.prepare_command()
         self.assertEqual(prepared["runtime"]["mode"], "native")
-        self.assertEqual(self.command("configure")["runtime"], "native")
+        self.write_settings({'runtime': 'docker'})
         self.assertEqual(self.journal.round(prepared["id"])["runtime"]["mode"], "native")
         self.command("cancel", prepared['directory'])
-        self.command('configure', '--docker')
         self.assertEqual(self.prepare_command()["runtime"]["mode"], "docker")
 
-    def test_old_launchers_require_explicit_migration_before_any_install(self):
+    def test_json_settings_require_explicit_migration_before_any_install(self):
         config = self.repo / ".agr" / "config.json"
-        config.write_text(json.dumps({"launcher": ["claude"]}))
+        config.write_text(json.dumps({'runtime': 'native', 'model': 'sonnet'}))
         result = subprocess.run([sys.executable, str(ENTRY), "--repo", str(self.repo), "prepare"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("legacy launcher", result.stderr)
+        self.assertIn(str(config), result.stderr)
+        self.assertIn('config.ini', result.stderr)
+        self.assertIn('[review]', result.stderr)
         self.assertEqual(len(self.journal.rows("rounds")), 0)
+
+    def test_configure_is_no_longer_a_command(self):
+        result = subprocess.run([sys.executable, str(ENTRY), '--help'], capture_output=True, text=True, check=True)
+        self.assertNotIn('configure', result.stdout)
+        result = subprocess.run([sys.executable, str(ENTRY), 'configure'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('invalid choice', result.stderr)
 
     def test_next_and_exports_keep_human_decisions_explicit(self):
         number = self.running()

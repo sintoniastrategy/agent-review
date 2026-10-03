@@ -1,14 +1,14 @@
 Follow [the author workflow](../SKILL.md) for review authorization, discussion and approved fix batches. This reference describes the helper operations used by that workflow.
 
-Managed installation and manual updating use `curl -fsSL https://github.com/sintoniastrategy/agent-review/releases/latest/download/install.sh | bash`. The installer downloads stable release assets anonymously, checks the archive checksum, retains versions in ~/.local/share/sst-agent-review/releases and atomically switches current after a successful installation. User skill symlinks point through current. Existing unrelated skills are not overwritten. The skill name is SST Agent Review (sst-agent-review). Installer-owned links use ~/.agents/skills/sst-agent-review and ~/.claude/skills/sst-agent-review. The installed bundle is available at ~/.local/share/sst-agent-review/current/agent-review. Personal settings should use configure --global or worktree configure overrides or external preset paths; managed release files are replaced by new versions.
+Managed installation and manual updating use `curl -fsSL https://github.com/sintoniastrategy/agent-review/releases/latest/download/install.sh | bash`. The installer downloads stable release assets anonymously, checks the archive checksum, retains versions in ~/.local/share/sst-agent-review/releases and atomically switches current after a successful installation. User skill symlinks point through current. Existing unrelated skills are not overwritten. The skill name is SST Agent Review (sst-agent-review). Installer-owned links use ~/.agents/skills/sst-agent-review and ~/.claude/skills/sst-agent-review. The installed bundle is available at ~/.local/share/sst-agent-review/current/agent-review. Personal settings belong in ~/.local/share/sst-agent-review/config.ini, worktree overrides in .agr/config.ini, and custom presets outside managed releases; release files are replaced by new versions.
 
 At the start of an invocation, `python3 /path/to/agent-review/scripts/install_skill.py --check` checks at most once per 24 hours and prints the concrete Skill and Helper paths. Read those instructions and keep those paths for this invocation, including when current changes later. A source checkout or manual bundle copy is not updated. Failures are advisory for automatic checks and print the manual update command for a normal terminal; explicit installation returns a failure exit status. Do not bypass the user's recovery rules. The installer does not request sandbox escalation, install packages or launch a reviewer. For an isolated installation test, pass `--home /temporary/user` to install_skill.py, or pass `-s -- --home /temporary/user` to the bootstrap bash command.
 
 The helper uses Python 3.9+ and its standard library on Linux or macOS. It needs Git, tmux, Docker by default, and Claude subscription authentication (a file, or Keychain for native macOS). The bundle manages its own pinned Claude binary. The human normally chooses the workflow in conversation; these commands are the author agent's implementation reference. Commands return programmatically generated JSON by default; prepare, start and status accept --human for concise text, and watch streams human-readable updates. Markdown export and publication acknowledgments are also plain text; agents write findings as Markdown, never JSON.
 
 ```sh
+python3 /path/to/agent-review/scripts/review.py --repo /path/to/worktree preflight --base main --human
 python3 /path/to/agent-review/scripts/review.py --repo /path/to/worktree init --base main --task-file /path/to/task.txt
-python3 /path/to/agent-review/scripts/review.py --repo /path/to/worktree configure --window-name repo/worktree
 python3 /path/to/agent-review/scripts/review.py --repo /path/to/worktree prepare --human
 python3 /path/to/agent-review/scripts/review.py --repo /path/to/worktree start r01-claude1 --human
 python3 /path/to/agent-review/scripts/review.py --repo /path/to/worktree watch r01-claude1
@@ -20,8 +20,7 @@ The base must already exist locally. The helper never fetches it. Source snapsho
 
 | Operation | Arguments | Effect |
 | --- | --- | --- |
-| `configure` | optional `--global`, `--docker` or `--no-docker`, `--auth auto/file/keychain --credentials-file PATH --window-name NAME --agent claude --model MODEL --effort LEVEL --preset NAME_OR_DIRECTORY --scope full/changes --reset FIELD --human` | Show effective settings; supplied fields update worktree overrides, or personal defaults with --global, and leave other fields unchanged. Global configuration works outside Git. Names must be ASCII without whitespace. |
-| `preflight` | optional `--base REF --human` | Check Git, tmux, credentials-file or Keychain-entry presence, base/HEAD/merge-base and Docker connectivity or native sandbox prerequisites; no installation or inference. Uses the existing cycle base when omitted. Subscription authentication is checked by managed Claude before launch. |
+| `preflight` | optional `--base REF --human` | Show effective settings and configuration file paths; check Git, tmux, credentials-file or Keychain-entry presence, base/HEAD/merge-base and Docker connectivity or native sandbox prerequisites; no installation or inference. Uses the existing cycle base when omitted. Subscription authentication is checked by managed Claude before launch. |
 | `instructions` | `discuss` or `fix` | Read the selected preset's author instructions; no model launch. |
 | `setup` | none | Build the image or install the separate native binary; no inference. |
 | `sessions` | none | Show the current review cycle in this worktree. |
@@ -46,7 +45,18 @@ The base must already exist locally. The helper never fetches it. Source snapsho
 | `stop` / `reopen` | `--reason TEXT` | Change cycle state without discarding pending items or launching a model. |
 | `export` | optional repeated `--finding ID`, `--format json/markdown` | Export generated context or selected decisions; no network operations. |
 
-The installed skill's `defaults.ini` supplies defaults for all worktrees using that installation. It can be edited in a manual copy; for managed releases use configure overrides and external presets to retain preferences across updates:
+Configuration uses INI files with exactly one `[review]` section. Edit them directly or ask the author agent to change the selected keys. No helper command writes configuration.
+
+Selection precedence, from lowest to highest:
+
+| File or input | Purpose |
+| --- | --- |
+| Installed `defaults.ini` | Complete shipped defaults; replaced by managed updates |
+| `~/.local/share/sst-agent-review/config.ini` | Personal overrides shared by worktrees |
+| Worktree `.agr/config.ini` | Local overrides for this worktree; ignored by Git |
+| Arguments to `prepare` | Agent, model, effort, preset and scope for one reviewer |
+
+Both override files are optional and may contain any subset of the following settings. Missing keys inherit; remove a key to restore inheritance. Create the parent directory if needed. The complete shipped defaults are:
 
 ```ini
 [review]
@@ -55,11 +65,19 @@ model = opus
 effort = xhigh
 preset = default
 scope = full
+runtime = docker
+auth = auto
+credentials_file =
+window_name =
 ```
 
-`opus` is Claude's latest-Opus alias, not a pinned model version. To select a particular model version, use its full model name. The managed Claude CLI supports effort low, medium, high, xhigh and max. The chosen alias or name is frozen at prepare time; an alias may resolve to a newer model at launch time. The helper does not claim to record the server's resolved model version.
+`agent` currently accepts only `claude`. `opus` is Claude's latest-Opus alias, not a pinned model version; use a full model name to select a particular version. Effort accepts `low`, `medium`, `high`, `xhigh`, and `max`; scope accepts `full` and `changes`. The selected alias or name is frozen at preparation, but an alias may resolve to a newer model at launch. The helper does not claim to record the server's resolved model version.
 
-Selection precedence is `defaults.ini` → personal `~/.local/share/sst-agent-review/config.json` → worktree `.agr/config.json` → arguments to `prepare`. Config stores only explicit overrides; inherited defaults remain inherited. `configure` with no arguments shows effective settings and the stored overrides without rewriting the config. `configure --human` shows the same selection in plain text. To change only the effort, use `configure --effort high`; credentials, runtime, model and preset remain unchanged. Use `configure --reset model --reset effort` to remove those worktree overrides and inherit personal or bundled defaults again. Reset also accepts agent, preset, scope, runtime, auth, credentials_file and window_name. A field cannot be set and reset in the same command. Invalid selections fail before runtime setup or round creation.
+`runtime` accepts `docker` or `native`. `auth` accepts `auto`, `file`, or `keychain`; native macOS uses Keychain automatically unless a credentials file is selected. An empty `credentials_file` uses the runtime's default authentication source and, for file authentication, `~/.claude/.credentials.json`. An empty `window_name` uses the automatic repo/worktree name; an explicit name must contain 1–80 ASCII characters without whitespace. Empty optional values override inherited custom values. Other settings must be nonempty.
+
+INI paths support `~`. Relative credentials and custom preset paths resolve against the reviewed worktree; use absolute paths for personal presets shared across projects. INI values are literal, without environment-variable or percent interpolation; do not add shell quotes around paths with spaces. The helpers read settings without rewriting the files. `preflight --base REF --human` validates and shows effective settings and the paths of all three INI files before a review. Changes apply to future preparations; prepared rounds retain their settings and copied prompts.
+
+A legacy `config.json` without a corresponding `config.ini` stops configuration loading with both paths and a migration instruction. Convert the settings manually: JSON `"runtime": "native"` becomes `runtime = native` under `[review]`. This is a format conversion, not a filename-only rename. Once the INI exists, only the INI is read; the old JSON may be retained as a backup outside active configuration. Machine-generated review state continues to use JSON separately.
 
 Each preset is a directory containing these nonempty UTF-8 files:
 
@@ -73,8 +91,14 @@ Each preset is a directory containing these nonempty UTF-8 files:
 
 Copy the default preset directory to customize it. A bare name selects presets/NAME in the installed skill. A path such as ./review-presets/security is relative to the reviewed worktree. The selected files replace their corresponding defaults. The skill always adds prompts/reviewer/protocol.md separately; changing reviewer policy does not require copying publication mechanics. Prompt text is ordinary message content, without template interpolation. Claude's built-in system prompt and runtime tool restrictions remain separate.
 
+Select a custom preset in the worktree's `.agr/config.ini`:
+
+```ini
+[review]
+preset = ./review-presets/security
+```
+
 ```sh
-python3 /path/to/agent-review/scripts/review.py --repo /path/to/worktree configure --preset ./review-presets/security --human
 python3 /path/to/agent-review/scripts/review.py --repo /path/to/worktree prepare --model sonnet --effort high --scope full --human
 python3 /path/to/agent-review/scripts/review.py --repo /path/to/worktree instructions discuss
 ```
@@ -99,7 +123,7 @@ One worktree has one review cycle. Files live in its ignored `.agr` directory:
 
 ```text
 .agr/
-  config.json
+  config.ini
   session.json
   decisions/
     0001-decision-r01-claude1-f001.md
@@ -159,11 +183,11 @@ The image contains the pinned Claude release and helper. The source worktree and
 
 Claude retains its normal system prompt, default tool set, skills and memory behaviour with bypassPermissions. There is no general tool allowlist or separate Chrome override. The launcher passes --disallowedTools AskUserQuestion,EnterPlanMode,ExitPlanMode to exclude tools that require questions or plan approval. Subagents remain technically available; the default workflow preset requests an independent review, while a different review prompt may allow delegation. The prompt requires continuing independent checks without clarification and reporting assumptions, uncertainty and coverage limitations before finishing. These instructions and tool exclusions do not guarantee the model will never ask a question in ordinary text; the existing idle watchdog still applies before completion. Source fixes, tests, dependency installation and extra reviewers are outside the current prompt's task. Focused documentation access remains available, and follow-up questions after completion still work normally.
 
-For explicitly chosen native execution, `configure --no-docker` installs the pinned binary under `.agr/.cache/runtime` and creates an ephemeral clean HOME and CLAUDE_CONFIG_DIR. User settings and shell wrappers are excluded. On macOS the clean PATH includes Homebrew tool directories. Native settings enable permissions.blockReadsOutsideWorkingDirectories and allow access to the skill and common Git directories. Claude's built-in Bash sandbox is requested when Seatbelt (macOS) or bubblewrap and socat (Linux) are found. Its allowUnsandboxedCommands is false while sandboxed, but failIfUnavailable is false: missing prerequisites or failed initialization warns and falls back to unsandboxed commands. Network destinations remain unrestricted. There is no command allowlist or custom outer sandbox. This is not whole-process or read-only isolation; source remains writable and unsandboxed commands have the user's permissions.
+For explicitly chosen native execution, set `runtime = native` in config.ini. Runtime setup installs the pinned binary under `.agr/.cache/runtime` and creates an ephemeral clean HOME and CLAUDE_CONFIG_DIR. User settings and shell wrappers are excluded. On macOS the clean PATH includes Homebrew tool directories. Native settings enable permissions.blockReadsOutsideWorkingDirectories and allow access to the skill and common Git directories. Claude's built-in Bash sandbox is requested when Seatbelt (macOS) or bubblewrap and socat (Linux) are found. Its allowUnsandboxedCommands is false while sandboxed, but failIfUnavailable is false: missing prerequisites or failed initialization warns and falls back to unsandboxed commands. Network destinations remain unrestricted. There is no command allowlist or custom outer sandbox. This is not whole-process or read-only isolation; source remains writable and unsandboxed commands have the user's permissions.
 
-Authentication defaults to auto. Native macOS selects the default Claude Code Keychain login unless credentials_file is explicitly configured; other modes select a file. Select --auth keychain explicitly with --no-docker on macOS, or --auth file --credentials-file PATH. Keychain preflight inspects entry metadata without exporting secrets. Native launch uses CLAUDE_SECURESTORAGE_CONFIG_DIR with an empty value to select the default credential store independently of its fresh CLAUDE_CONFIG_DIR; this behavior was checked in the pinned 2.1.284 macOS artifact. Claude handles token refresh. The helper never copies Keychain tokens to journal files or argv. Keychain can ask for OS approval on first access. Docker continues to require a credentials file; no host Keychain RPC bridge is installed. Custom Keychain profiles are not discovered.
+Authentication defaults to auto. Native macOS selects the default Claude Code Keychain login unless credentials_file is explicitly configured; other modes select a file. Select `auth = keychain` explicitly with `runtime = native` on macOS, or `auth = file` with `credentials_file = PATH`. Keychain preflight inspects entry metadata without exporting secrets. Native launch uses CLAUDE_SECURESTORAGE_CONFIG_DIR with an empty value to select the default credential store independently of its fresh CLAUDE_CONFIG_DIR; this behavior was checked in the pinned 2.1.284 macOS artifact. Claude handles token refresh. The helper never copies Keychain tokens to journal files or argv. Keychain can ask for OS approval on first access. Docker continues to require a credentials file; no host Keychain RPC bridge is installed. Custom Keychain profiles are not discovered.
 
-All configuration layers can select the runtime, authentication and review preferences. Personal configuration is outside versioned releases and is not replaced by updates. configure --global --reset FIELD removes a personal override; configure --reset FIELD removes only a worktree override. Subscription authentication is checked in both modes before inference; there is no API-key fallback. Neither TTY presence nor subscription authentication proves the provider's billing treatment.
+All configuration layers can select the runtime, authentication and review preferences. Personal configuration is outside versioned releases and is not replaced by updates. Remove a key from the personal or worktree INI to remove that layer's override. Subscription authentication is checked in both modes before inference; there is no API-key fallback. Neither TTY presence nor subscription authentication proves the provider's billing treatment.
 
 Keep source unchanged until review status becomes terminal. A successful report sets status to completed and finished_at immediately, while session_open remains true. The worker keeps Claude, its container and temporary home alive for reading and follow-up input until close REVIEWER, a normal CLI exit, or the next pass. Closing sets session_open to false and closed_at without changing the completed report or its completion time. Cleanup success is recorded separately as cleanup_complete. Errors are retained in session_error and block the next pass even when the old pane is gone; a false session_open alone does not prove runtime cleanup succeeded. Stopping the client and cleaning the container are separate attempts, so failure to stop the client does not skip container cleanup. After inspection and the user's recovery approval, explicitly call close REVIEWER to retry an owned Docker cleanup. Success clears session_error and retains its prior value as previous_session_error without changing findings, reports or the original review completion time. Automatic startup never retries a previously recorded cleanup error. Old rounds without saved Docker connection metadata cannot be launched or have uncertain cleanup resolved by guessing the current connection; previously confirmed closed sessions remain closed. The idle watchdog applies only before report completion. After completion, source edits do not invalidate the saved review; questions about that review should refer to its recorded snapshot. Source comparison before and after each run detects stale results. Dirty submodule contents are rejected because the parent snapshot cannot retain them. Interrupted and failed runs retain all published findings, drafts and terminal output and never resume automatically. A reviewer startup that does not reach the input prompt within 60 seconds fails with the retained terminal log. Follow the user's recovery approvals before retrying or changing launch behavior.
 

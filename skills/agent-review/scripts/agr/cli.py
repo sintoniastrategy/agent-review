@@ -6,15 +6,14 @@ import subprocess
 import sys
 import shutil
 
-from . import ReviewError, now, read_json, write_json
+from . import ReviewError, now, read_json
 from .prompts import prepare, previous_review
 from .source import resolve, root, same_source, snapshot
-from .store import ACTIVE, Journal, local_directory
+from .store import ACTIVE, Journal
 from . import tmux
 from . import runtime
 from . import progress
 from . import configuration
-from .documents import locked
 from .names import round_name
 
 
@@ -23,16 +22,6 @@ def parser():
     result.add_argument("--repo", default=".")
     result.add_argument("--session")
     commands = result.add_subparsers(dest="command", required=True)
-    config = commands.add_parser("configure")
-    config.add_argument('--human', action='store_true')
-    config.add_argument('--global', dest='global_config', action='store_true', help='Set personal defaults outside versioned releases; no Git repository required')
-    mode = config.add_mutually_exclusive_group()
-    mode.add_argument('--docker', dest='runtime', action='store_const', const='docker')
-    mode.add_argument('--no-docker', dest='runtime', action='store_const', const='native')
-    config.add_argument("--credentials-file", type=Path)
-    config.add_argument('--auth', choices=('auto', 'file', 'keychain'))
-    config.add_argument("--window-name")
-    config.add_argument('--reset', action='append', choices=configuration.REVIEW_KEYS + configuration.RUNTIME_KEYS, default=[])
     commands.add_parser("setup")
     check = commands.add_parser('preflight')
     check.add_argument('--base')
@@ -46,12 +35,11 @@ def parser():
     review = commands.add_parser("prepare")
     review.add_argument('--human', action='store_true')
     review.add_argument("--parallel-with", metavar='REVIEWER')
-    for command in (config, review):
-        command.add_argument('--agent', choices=('claude',))
-        command.add_argument('--model')
-        command.add_argument('--effort', choices=configuration.EFFORTS)
-        command.add_argument('--preset', metavar='NAME_OR_DIRECTORY')
-        command.add_argument('--scope', choices=configuration.SCOPES)
+    review.add_argument('--agent', choices=('claude',))
+    review.add_argument('--model')
+    review.add_argument('--effort', choices=configuration.EFFORTS)
+    review.add_argument('--preset', metavar='NAME_OR_DIRECTORY')
+    review.add_argument('--scope', choices=configuration.SCOPES)
     start = commands.add_parser("start")
     start.add_argument('--human', action='store_true')
     start.add_argument("round", metavar='REVIEWER')
@@ -182,8 +170,7 @@ def markdown(data, selected):
 
 
 def execute(args):
-    global_config = args.command == 'configure' and args.global_config
-    repo = Path(args.repo).expanduser().resolve() if global_config else root(args.repo)
+    repo = root(args.repo)
     if args.command == 'instructions':
         return configuration.load_review(repo)[args.phase + '_prompt']
     if args.command == 'preflight':
@@ -205,37 +192,18 @@ def execute(args):
         base_commit = resolve(repo, base)
         from .source import git
         merge_base = git(repo, 'merge-base', base_commit, head).decode().strip()
-        result = {'tools': paths, 'base': base, 'base_commit': base_commit, 'head': head, 'merge_base': merge_base, 'runtime': settings['runtime'], **{key: selected[key] for key in configuration.REVIEW_KEYS}}
+        result = {
+            'tools': paths, 'base': base, 'base_commit': base_commit, 'head': head, 'merge_base': merge_base,
+            **settings, **{key: selected[key] for key in configuration.REVIEW_KEYS},
+            'defaults': str(configuration.SKILL / 'defaults.ini'),
+            'global_config': str(configuration.global_path()), 'worktree_config': str(repo / '.agr/config.ini'),
+            'authentication': auth,
+        }
         if settings['runtime'] == 'docker':
             result.update(runtime.docker_identity())
         else:
             result['sandbox'] = runtime.native_sandbox()['message']
-        result['auth'] = auth
         return '\n'.join(key + ': ' + str(value) for key, value in result.items()) if args.human else result
-    if args.command == "configure":
-        destination = configuration.global_path() if global_config else local_directory(repo) / "config.json"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        updates = {key: getattr(args, key) for key in configuration.REVIEW_KEYS + configuration.RUNTIME_KEYS if getattr(args, key) is not None}
-        if set(args.reset) & set(updates):
-            raise ReviewError('Cannot set and reset the same configuration field')
-        with locked(destination.parent / '.lock'):
-            values = configuration.global_settings() if global_config else configuration.local(repo)
-            for key in args.reset:
-                values.pop(key, None)
-            values.update(updates)
-            settings = runtime.configuration(repo, {} if global_config else values, values if global_config else None)
-            selected = configuration.load_review(repo, values={} if global_config else values, global_values=values if global_config else None)
-            settings.update({key: selected[key] for key in configuration.REVIEW_KEYS})
-            values = {key: value if key == 'auth' else settings[key] for key, value in values.items()}
-            if updates or args.reset:
-                write_json(destination, values)
-        result = {'config': str(destination), **settings, 'overrides': values, 'global_config': str(configuration.global_path())}
-        if args.human:
-            return '\n'.join(['Effective configuration:'] + [key + ': ' + str(value) for key, value in settings.items()] + [
-                ('Global' if global_config else 'Worktree') + ' overrides: ' + (', '.join(values) or 'none'),
-                'Configuration: ' + str(destination), 'Global configuration: ' + str(configuration.global_path()),
-            ] + ([runtime.native_sandbox()['message']] if settings['runtime'] == 'native' else []))
-        return result
     if args.command == "setup":
         return runtime.setup(repo, runtime.configuration(repo))
     if args.command == "init":

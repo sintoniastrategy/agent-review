@@ -40,7 +40,7 @@ class RepositoryTest(unittest.TestCase):
         self.repo.mkdir()
         home = Path(self.temporary.name) / 'home'
         home.mkdir()
-        self.global_config = home / '.local/share/sst-agent-review/config.json'
+        self.global_config = home / '.local/share/sst-agent-review/config.ini'
         clean = {key: value for key, value in os.environ.items() if key not in {
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
@@ -63,6 +63,12 @@ class RepositoryTest(unittest.TestCase):
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True).stdout
+
+    def write_settings(self, values, path=None):
+        path = path or self.repo / '.agr/config.ini'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('[review]\n' + ''.join(key + ' = ' + str(value) + '\n' for key, value in values.items()), encoding='utf-8')
+        return path
 
     def prepared(self, scenario="success", **options):
         return prepare(self.journal, self.fake_runtime(scenario), **options)

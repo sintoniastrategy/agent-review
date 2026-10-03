@@ -2,7 +2,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from .support import RepositoryTest
-from agr import ReviewError, configuration, progress, read_json, write_json
+from agr import ReviewError, configuration, progress, runtime
 from agr.cli import execute, parser
 from agr.runner import claude_command
 
@@ -22,7 +22,7 @@ class ConfigurationTests(RepositoryTest):
     def skill(self):
         path = Path(self.temporary.name) / 'skill'
         self.preset(path / 'presets' / 'focused')
-        (path / 'defaults.ini').write_text('[review]\nagent = claude\nmodel = sonnet\neffort = high\npreset = focused\nscope = full\n')
+        (path / 'defaults.ini').write_text('[review]\nagent = claude\nmodel = sonnet\neffort = high\npreset = focused\nscope = full\nruntime = docker\nauth = auto\ncredentials_file =\nwindow_name =\n')
         protocol = path / 'prompts/reviewer/protocol.md'
         protocol.parent.mkdir(parents=True)
         protocol.write_text((configuration.SKILL / 'prompts/reviewer/protocol.md').read_text())
@@ -45,33 +45,29 @@ class ConfigurationTests(RepositoryTest):
         self.assertIn(review.rstrip() + '\n\n' + workflow.rstrip(), (directory / 'prompt.md').read_text())
         self.assertIn('Model: opus | effort: xhigh | preset: default', progress.describe(self.journal, record['id']))
 
-    def test_configure_preserves_fields_and_does_not_pin_inherited_defaults(self):
+    def test_manual_settings_are_read_without_rewriting_or_pinning_defaults(self):
         credentials = Path(self.temporary.name) / 'credentials.json'
-        first = self.command('configure', '--no-docker', '--credentials-file', str(credentials), '--window-name', 'repo/branch', '--effort', 'low')
-        config = Path(first['config'])
+        config = self.write_settings({'runtime': 'native', 'credentials_file': credentials, 'window_name': 'repo/branch', 'effort': 'low'})
         original = config.read_bytes()
-        self.assertEqual(self.command('configure')['effort'], 'low')
+        settings = runtime.configuration(self.repo)
+        self.assertEqual(settings['runtime'], 'native')
+        self.assertEqual(settings['credentials_file'], str(credentials))
+        self.assertEqual(settings['window_name'], 'repo/branch')
+        self.assertEqual(configuration.load_review(self.repo)['effort'], 'low')
         self.assertEqual(config.read_bytes(), original)
-        second = self.command('configure', '--model', 'sonnet')
-        self.assertEqual(second['runtime'], 'native')
-        self.assertEqual(second['credentials_file'], str(credentials))
-        self.assertEqual(second['window_name'], 'repo/branch')
-        self.assertEqual(second['effort'], 'low')
-        self.assertNotIn('agent', read_json(config))
-        self.assertNotIn('preset', read_json(config))
         with patch('agr.configuration.SKILL', self.skill()):
-            self.assertEqual(self.command('configure')['preset'], 'focused')
-            inherited = self.command('configure', '--reset', 'effort', '--reset', 'model')
+            self.assertEqual(configuration.load_review(self.repo)['preset'], 'focused')
+            self.write_settings({'runtime': 'native'})
+            inherited = configuration.load_review(self.repo)
         self.assertEqual(inherited['effort'], 'high')
         self.assertEqual(inherited['model'], 'sonnet')
-        self.assertNotIn('model', read_json(config))
-        self.assertNotIn('effort', read_json(config))
+        self.assertEqual(configuration.local(self.repo), {'runtime': 'native'})
 
     def test_prepare_precedence_and_preset_replacement(self):
         custom = self.preset(self.repo / '.agr/custom', 'Only check data loss.\n', 'Delegate focused checks.\n')
         with patch('agr.configuration.SKILL', self.skill()):
-            self.assertEqual(self.command('configure')['model'], 'sonnet')
-            self.command('configure', '--model', 'opus', '--effort', 'low')
+            self.assertEqual(configuration.load_review(self.repo)['model'], 'sonnet')
+            self.write_settings({'model': 'opus', 'effort': 'low'})
             managed = self.fake_runtime()
             with patch('agr.cli.runtime.setup', return_value=managed):
                 record = self.command('prepare', '--agent', 'claude', '--model', 'claude-specific-version', '--preset', './.agr/custom')
@@ -79,8 +75,8 @@ class ConfigurationTests(RepositoryTest):
         self.assertEqual(record['effort'], 'low')
         self.assertEqual(record['preset'], str(custom))
         self.assertEqual(record['directory'], 'r01-claude1')
-        self.assertEqual(self.command('configure')['model'], 'opus')
-        self.assertEqual(self.command('configure')['preset'], 'default')
+        self.assertEqual(configuration.load_review(self.repo)['model'], 'opus')
+        self.assertEqual(configuration.load_review(self.repo)['preset'], 'default')
         prompt = (self.journal.round_directory(record['id']) / 'prompt.md').read_text()
         self.assertTrue(prompt.startswith('Only check data loss.\n\nDelegate focused checks.\n'))
         self.assertNotIn('do not delegate to subagents', prompt)
@@ -89,12 +85,12 @@ class ConfigurationTests(RepositoryTest):
 
     def test_prepared_texts_and_launch_settings_survive_config_and_preset_edits(self):
         custom = self.preset(self.repo / '.agr/custom')
-        self.command('configure', '--preset', './.agr/custom', '--model', 'sonnet', '--effort', 'high')
+        self.write_settings({'preset': './.agr/custom', 'model': 'sonnet', 'effort': 'high'})
         record = self.prepared()
         directory = self.journal.round_directory(record['id'])
         originals = {name: (directory / name).read_bytes() for name in ('prompt.md', 'input/review.md', 'input/policy.md')}
         self.preset(custom, 'Changed review\n', 'Changed workflow\n')
-        self.command('configure', '--model', 'opus', '--effort', 'max', '--preset', 'default')
+        self.write_settings({'model': 'opus', 'effort': 'max', 'preset': 'default'})
         frozen = self.journal.round(record['id'])
         self.assertEqual((frozen['model'], frozen['effort'], frozen['preset']), ('sonnet', 'high', str(custom)))
         for name, content in originals.items():
@@ -128,25 +124,37 @@ class ConfigurationTests(RepositoryTest):
             ({'model': ''}, 'model must be'),
             ({'effort': 'extreme'}, 'Effort must be'),
             ({'agent': 'codex'}, 'not implemented'),
+            ({'runtime': 'podman'}, 'Runtime must be'),
+            ({'auth': 'unknown'}, 'Auth must be'),
         )
         for values, message in cases:
             with self.subTest(values=values):
-                write_json(self.repo / '.agr/config.json', values)
+                self.write_settings(values)
                 with patch('agr.cli.runtime.setup') as setup:
                     with self.assertRaisesRegex(ReviewError, message):
                         self.command('prepare')
                     setup.assert_not_called()
                 self.assertEqual(self.journal.rows('rounds'), [])
 
-    def test_invalid_configuration_does_not_overwrite_existing_values(self):
-        config = self.repo / '.agr/config.json'
-        self.command('configure', '--model', 'sonnet')
-        original = config.read_bytes()
-        for args in (('--preset', 'missing'), ('--model', ''), ('--model', 'opus', '--reset', 'model')):
-            with self.subTest(args=args):
-                with self.assertRaises(ReviewError):
-                    self.command('configure', *args)
-                self.assertEqual(config.read_bytes(), original)
+    def test_invalid_ini_reports_its_path_without_rewriting_or_installing(self):
+        config = self.repo / '.agr/config.ini'
+        cases = (
+            '[review]\nmodel = opus\nmodel = sonnet\n',
+            '[review]\nefort = high\n',
+            '[review]\n[extra]\nmodel = sonnet\n',
+            '[DEFAULT]\nmodel = opus\n[review]\n',
+            'model = sonnet\n',
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                config.write_text(text)
+                with patch('agr.cli.runtime.setup') as setup:
+                    with self.assertRaises(ReviewError) as error:
+                        self.command('prepare')
+                    setup.assert_not_called()
+                self.assertIn(str(config), str(error.exception))
+                self.assertEqual(config.read_text(), text)
+                self.assertEqual(self.journal.rows('rounds'), [])
 
     def test_defaults_are_strict_and_prompt_text_is_not_interpolated(self):
         skill = self.skill()
@@ -158,57 +166,93 @@ class ConfigurationTests(RepositoryTest):
                 with self.assertRaises(ReviewError):
                     configuration.load_review(self.repo)
 
-    def test_human_configuration_and_historical_status_do_not_invent_defaults(self):
-        text = self.command('configure', '--human')
-        self.assertIn('model: opus', text)
-        self.assertIn('preset: default', text)
-        self.assertIn('Worktree overrides: none', text)
+    def test_preflight_shows_effective_settings_without_mutating_configuration(self):
+        managed = self.fake_runtime()
+        self.write_settings({'model': 'sonnet', 'effort': 'medium'}, self.global_config)
+        config = self.write_settings({'runtime': 'native', 'credentials_file': managed['credentials_file'], 'effort': 'high'})
+        original = config.read_bytes()
+        with patch('agr.cli.shutil.which', side_effect=lambda name, **kwargs: '/tools/' + name), patch('agr.cli.runtime.setup') as setup:
+            result = self.command('preflight', '--base', 'base')
+            self.assertEqual((result['model'], result['effort'], result['runtime'], result['auth']), ('sonnet', 'high', 'native', 'file'))
+            self.assertEqual(result['global_config'], str(self.global_config))
+            self.assertEqual(result['worktree_config'], str(config))
+            self.assertEqual(result['credentials_file'], managed['credentials_file'])
+            text = self.command('preflight', '--base', 'base', '--human')
+            self.assertIn('model: sonnet', text)
+            self.assertIn('runtime: native', text)
+            self.assertIn('auth: file', text)
+            self.assertIn(str(config), text)
+            setup.assert_not_called()
+        self.assertEqual(config.read_bytes(), original)
+        self.assertEqual(self.journal.rows('rounds'), [])
+
+    def test_historical_status_does_not_invent_defaults(self):
         record = self.prepared()
         self.journal.update_round(record['id'], model=None, effort=None, preset=None)
         text = progress.describe(self.journal, record['id'])
         self.assertIn('Model: not recorded | effort: not recorded | preset: not recorded', text)
 
     def test_global_defaults_worktree_and_prepare_precedence(self):
-        global_result = self.command('configure', '--global', '--model', 'sonnet', '--effort', 'medium', '--no-docker')
-        self.assertEqual(global_result['config'], str(self.global_config))
-        self.assertEqual(self.command('configure')['model'], 'sonnet')
-        self.assertEqual(self.command('configure')['runtime'], 'native')
-        self.command('configure', '--effort', 'high')
+        self.write_settings({'model': 'sonnet', 'effort': 'medium', 'runtime': 'native'}, self.global_config)
+        self.assertEqual(configuration.load_review(self.repo)['model'], 'sonnet')
+        self.assertEqual(runtime.configuration(self.repo)['runtime'], 'native')
+        self.write_settings({'effort': 'high', 'runtime': 'docker'})
+        self.assertEqual(runtime.configuration(self.repo)['runtime'], 'docker')
         with patch('agr.cli.runtime.setup', return_value=self.fake_runtime()):
             record = self.command('prepare', '--model', 'opus')
         self.assertEqual((record['model'], record['effort']), ('opus', 'high'))
-        self.assertEqual(self.command('configure', '--global')['effort'], 'medium')
-        self.assertEqual(self.command('configure', '--reset', 'effort')['effort'], 'medium')
-        self.assertEqual(read_json(self.repo / '.agr/config.json'), {})
-        self.command('configure', '--global', '--reset', 'effort')
-        self.assertEqual(self.command('configure')['effort'], 'xhigh')
+        self.assertEqual(configuration.global_settings()['effort'], 'medium')
+        self.assertEqual(configuration.load_review(self.repo)['model'], 'sonnet')
+        self.write_settings({})
+        self.assertEqual(configuration.load_review(self.repo)['effort'], 'medium')
+        self.write_settings({'model': 'sonnet'}, self.global_config)
+        self.assertEqual(configuration.load_review(self.repo)['effort'], 'xhigh')
+        self.assertEqual(runtime.configuration(self.repo)['runtime'], 'docker')
 
-    def test_global_configuration_does_not_require_a_git_repository(self):
-        outside = Path(self.temporary.name) / 'outside'
-        outside.mkdir()
-        result = execute(parser().parse_args(['--repo', str(outside), 'configure', '--global', '--model', 'sonnet']))
-        self.assertEqual(result['model'], 'sonnet')
-        self.assertFalse((outside / '.agr').exists())
+    def test_global_custom_preset_with_absolute_path_works_across_worktrees(self):
+        custom = self.preset(self.repo / 'custom')
+        self.write_settings({'preset': str(custom)}, self.global_config)
+        self.assertEqual(configuration.load_review(Path(self.temporary.name))['preset'], str(custom))
+        self.assertEqual(configuration.load_review(self.repo)['preset'], str(custom))
 
-    def test_global_custom_preset_is_saved_as_absolute_and_survives_other_worktrees(self):
-        self.preset(self.repo / 'custom')
-        self.command('configure', '--global', '--preset', './custom')
-        self.assertEqual(read_json(self.global_config)['preset'], str(self.repo / 'custom'))
-        self.assertEqual(configuration.load_review(Path(self.temporary.name))['preset'], str(self.repo / 'custom'))
+    def test_runtime_defaults_are_loaded_from_ini_and_can_be_overridden(self):
+        skill = self.skill()
+        defaults = skill / 'defaults.ini'
+        defaults.write_text(defaults.read_text().replace('runtime = docker', 'runtime = native').replace('auth = auto', 'auth = file'))
+        with patch('agr.configuration.SKILL', skill):
+            self.assertEqual(runtime.configuration(self.repo)['runtime'], 'native')
+            self.write_settings({'runtime': 'docker'})
+            self.assertEqual(runtime.configuration(self.repo)['runtime'], 'docker')
 
-    def test_invalid_global_change_preserves_both_layers(self):
-        self.command('configure', '--global', '--model', 'sonnet')
-        self.command('configure', '--effort', 'low')
-        original = self.global_config.read_bytes()
-        with self.assertRaises(ReviewError):
-            self.command('configure', '--global', '--preset', 'missing')
-        self.assertEqual(self.global_config.read_bytes(), original)
-        self.assertEqual(self.command('configure')['effort'], 'low')
-
-    def test_auto_auth_remains_inherited_after_removing_explicit_file(self):
+    def test_auto_auth_and_empty_optional_values_use_runtime_defaults(self):
+        self.write_settings({'runtime': 'native', 'credentials_file': '/fixture/credentials.json', 'window_name': 'repo/branch'}, self.global_config)
         with patch('agr.runtime.platform.system', return_value='Darwin'):
-            self.command('configure', '--no-docker', '--auth', 'auto', '--credentials-file', '/fixture/credentials.json')
-            self.assertEqual(read_json(self.repo / '.agr/config.json')['auth'], 'auto')
-            self.assertEqual(self.command('configure')['auth'], 'file')
-            self.assertEqual(self.command('configure', '--reset', 'credentials_file')['auth'], 'keychain')
-            self.assertEqual(self.command('configure', '--docker')['auth'], 'file')
+            self.assertEqual(runtime.configuration(self.repo)['auth'], 'file')
+            self.write_settings({'credentials_file': '', 'window_name': ''})
+            settings = runtime.configuration(self.repo)
+            self.assertEqual(settings['auth'], 'keychain')
+            self.assertIsNone(settings['window_name'])
+            self.write_settings({'runtime': 'docker'})
+            self.assertEqual(runtime.configuration(self.repo)['auth'], 'file')
+
+    def test_ini_values_are_literal_and_relative_credentials_use_the_worktree(self):
+        self.write_settings({'credentials_file': 'auth files/token%20.json', 'model': 'claude-specific-version'})
+        self.assertEqual(runtime.configuration(self.repo)['credentials_file'], str(self.repo / 'auth files/token%20.json'))
+        self.assertEqual(configuration.load_review(self.repo)['model'], 'claude-specific-version')
+
+    def test_legacy_global_configuration_requires_manual_conversion(self):
+        legacy = self.global_config.with_suffix('.json')
+        legacy.parent.mkdir(parents=True)
+        original = '{"model":"sonnet","runtime":"native"}\n'
+        legacy.write_text(original)
+        with patch('agr.cli.runtime.setup') as setup:
+            with self.assertRaises(ReviewError) as error:
+                self.command('prepare')
+            setup.assert_not_called()
+        self.assertIn(str(legacy), str(error.exception))
+        self.assertIn(str(self.global_config), str(error.exception))
+        self.assertEqual(legacy.read_text(), original)
+        self.write_settings({'model': 'sonnet', 'runtime': 'native'}, self.global_config)
+        self.assertEqual(configuration.load_review(self.repo)['model'], 'sonnet')
+        self.assertEqual(runtime.configuration(self.repo)['runtime'], 'native')
+        self.assertEqual(legacy.read_text(), original)
