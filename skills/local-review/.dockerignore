@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!runtime-release.json
+!scripts/
+!scripts/**
+**/__pycache__/

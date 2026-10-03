@@ -1,0 +1,296 @@
+import csv
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+from . import ReviewError, read_json, write_json
+from . import configuration as review_config
+from .source import git
+from .store import local_directory
+
+
+SKILL = Path(__file__).resolve().parents[2]
+ENTRY = SKILL / "scripts" / "review.py"
+RELEASE = read_json(SKILL / "runtime-release.json")
+DOWNLOADS = "https://downloads.claude.ai/claude-code-releases"
+CONTAINER_CREDENTIALS = "/run/agr/credentials.json"
+
+
+def digest(path):
+    result = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            result.update(chunk)
+    return result.hexdigest()
+
+
+def platform_name():
+    system = {"Linux": "linux", "Darwin": "darwin"}.get(platform.system())
+    architecture = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(platform.machine())
+    if not system or not architecture:
+        raise ReviewError("Managed Claude requires Linux or macOS on x64 or ARM64")
+    name = system + "-" + architecture
+    if system == "linux" and (list(Path("/lib").glob("libc.musl-*.so.1")) or platform.libc_ver()[0] == "musl"):
+        name += "-musl"
+    return name
+
+
+def install_binary(destination):
+    destination = Path(destination)
+    name = platform_name()
+    expected = RELEASE["platforms"][name]
+    if destination.is_file():
+        if digest(destination) != expected["checksum"]:
+            raise ReviewError("Managed Claude checksum mismatch: " + str(destination))
+        return destination
+    if not shutil.which("curl"):
+        raise ReviewError("curl is required to download managed Claude")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, filename = tempfile.mkstemp(prefix="download-", dir=destination.parent)
+    os.close(descriptor)
+    temporary = Path(filename)
+    try:
+        url = DOWNLOADS + "/" + RELEASE["version"] + "/" + name + "/claude"
+        print("Downloading Claude " + RELEASE["version"] + " for " + name, file=sys.stderr, flush=True)
+        subprocess.run(["curl", "--fail", "--location", "--show-error", "--connect-timeout", "30", "--max-time", "600", "--output", str(temporary), url], check=True, stdout=sys.stderr)
+        if temporary.stat().st_size != expected["size"] or digest(temporary) != expected["checksum"]:
+            raise ReviewError("Downloaded Claude did not match its pinned size and SHA-256")
+        temporary.chmod(0o755)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
+def configuration(repo, values=None):
+    values = review_config.local(repo, values)
+    mode = values.get("runtime", "docker")
+    if mode not in {"docker", "native"}:
+        raise ReviewError("Runtime must be docker or native")
+    credentials = Path(values.get("credentials_file", str(Path.home() / ".claude" / ".credentials.json"))).expanduser().resolve()
+    name = values.get("window_name")
+    if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(character) < 33 or ord(character) > 126 for character in name)):
+        raise ReviewError("Window name must contain 1 to 80 ASCII characters without whitespace")
+    return {"runtime": mode, "credentials_file": str(credentials), "window_name": name}
+
+
+def checked(args, **kwargs):
+    result = subprocess.run(args, capture_output=True, text=True, timeout=60, **kwargs)
+    if result.returncode:
+        raise ReviewError(result.stderr.strip() or "Command failed: " + args[0])
+    return result.stdout.strip()
+
+
+def image_tag():
+    paths = [SKILL / "Dockerfile", SKILL / ".dockerignore", SKILL / "runtime-release.json"]
+    paths += sorted((SKILL / "scripts").rglob("*.py"))
+    value = hashlib.sha256()
+    for path in paths:
+        value.update(path.relative_to(SKILL).as_posix().encode())
+        value.update(path.read_bytes())
+    return "agr-claude:" + RELEASE["version"] + "-" + value.hexdigest()[:16]
+
+
+def docker_connection():
+    executable = shutil.which('docker')
+    if not executable:
+        if shutil.which('podman'):
+            raise ReviewError('Podman is not supported yet; use Docker Engine without userns-remap')
+        raise ReviewError('Docker is required; configure --no-docker explicitly for an isolated CI environment')
+    executable = str(Path(executable).absolute())
+    keys = ('HOME', 'PATH', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
+            'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH',
+            'DOCKER_API_VERSION', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+            'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy')
+    environment = {key: os.environ[key] for key in keys if key in os.environ}
+    environment.update(HOME=str(Path.home()), LANG='C', LC_ALL='C')
+    config = Path(os.environ.get('DOCKER_CONFIG') or Path.home() / '.docker').expanduser().resolve()
+    environment['DOCKER_CONFIG'] = str(config)
+    context = environment.get('DOCKER_CONTEXT') or ('default' if environment.get('DOCKER_HOST') else checked([executable, 'context', 'show'], env=environment))
+    try:
+        metadata = json.loads(checked([executable, 'context', 'inspect', context, '--format', '{{json .}}'], env=environment))
+        endpoint = metadata['Endpoints']['docker']
+        host = endpoint['Host']
+        if not isinstance(host, str) or not host:
+            raise ValueError('Missing Docker endpoint')
+        args = [executable, '--config', str(config), '--host', host]
+        if context == 'default':
+            verify = bool(environment.get('DOCKER_TLS_VERIFY'))
+            tls = verify or bool(environment.get('DOCKER_TLS'))
+            certificates = Path(environment.get('DOCKER_CERT_PATH') or config).expanduser().resolve()
+            material = [name for name in ('ca.pem', 'cert.pem', 'key.pem') if (certificates / name).is_file()] if tls else []
+        else:
+            material = metadata.get('TLSMaterial', {}).get('docker', [])
+            verify = not endpoint.get('SkipTLSVerify', False)
+            tls = bool(material) or not verify
+            certificates = Path(metadata['Storage']['TLSPath']) / 'docker' if material else config
+        if tls:
+            args.append('--tlsverify' if verify else '--tls')
+            for name, flag in (('ca.pem', '--tlscacert'), ('cert.pem', '--tlscert'), ('key.pem', '--tlskey')):
+                args += [flag, str(certificates / name) if name in material else '']
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise ReviewError('Cannot freeze Docker connection from context metadata') from error
+    for key in ('DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'):
+        environment.pop(key, None)
+    return {'command': args, 'environment': environment, 'endpoint': host, 'context': context}
+
+
+def docker_client(managed):
+    client = managed.get('docker_client')
+    if not client:
+        raise ReviewError('Docker connection was not recorded for this round; inspect the retained runtime before cleanup, or prepare a new round before launch')
+    return client
+
+
+def docker_identity(client=None):
+    client = client if client is not None else docker_connection()
+    try:
+        version = json.loads(checked(client['command'] + ['version', '--format', '{{json .}}'], env=client['environment']))
+        info = json.loads(checked(client['command'] + ['info', '--format', '{{json .}}'], env=client['environment']))
+    except ValueError as error:
+        raise ReviewError('Cannot identify the container engine; expected Docker Engine JSON metadata') from error
+    if not isinstance(version, dict) or not isinstance(info, dict):
+        raise ReviewError('Cannot identify the container engine; expected Docker Engine metadata')
+    if 'podman' in json.dumps(version).lower() or {'host', 'store'} <= info.keys():
+        raise ReviewError('Podman is not supported yet; use Docker Engine without userns-remap')
+    server = version.get('Server')
+    components = server.get('Components') if isinstance(server, dict) else None
+    if not isinstance(components, list) or not any(isinstance(item, dict) and item.get('Name') == 'Engine' for item in components) or info.get('OSType') != 'linux':
+        raise ReviewError('Unknown container engine; only Linux Docker Engine without userns-remap is supported')
+    security = info.get('SecurityOptions')
+    if not isinstance(security, list) or any(not isinstance(item, str) or not item.startswith('name=') for item in security):
+        raise ReviewError('Cannot determine Docker user namespace mode from SecurityOptions')
+    modes = {item.split(',', 1)[0] for item in security}
+    if 'name=userns' in modes:
+        raise ReviewError('Docker userns-remap is not supported yet; no runtime or host permissions were changed')
+    rootless = 'name=rootless' in modes
+    return {'docker_mode': 'rootless' if rootless else 'rootful', 'user': '0:0' if rootless else str(os.getuid()) + ':' + str(os.getgid())}
+
+
+def setup(repo, settings):
+    credentials = Path(settings["credentials_file"])
+    if not credentials.is_file():
+        raise ReviewError("Supply a subscription credentials file with configure --credentials-file: " + str(credentials))
+    record = {"mode": settings["runtime"], "version": RELEASE["version"], "credentials_file": str(credentials), "window_name": settings["window_name"]}
+    if record["mode"] == "native":
+        binary = install_binary(local_directory(repo) / ".cache" / "runtime" / RELEASE["version"] / platform_name() / "claude")
+        record.update(executable=str(binary), sha256=digest(binary), python=sys.executable, entry=str(ENTRY))
+        return record
+    client = docker_connection()
+    identity = docker_identity(client)
+    tag = image_tag()
+    images = checked(client['command'] + ["image", "ls", "--no-trunc", "--quiet", tag], env=client['environment'])
+    if not images:
+        print("Building " + tag, file=sys.stderr, flush=True)
+        subprocess.run(client['command'] + ["build", "--progress", "plain", "--tag", tag, str(SKILL)], env=client['environment'], check=True, stdout=sys.stderr, timeout=1800)
+    image = checked(client['command'] + ["image", "inspect", "--format", "{{.Id}}", tag], env=client['environment'])
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
+        raise ReviewError("Docker returned an invalid image ID")
+    record.update(identity, docker_client=client, image=image, image_tag=tag, executable="/opt/agr/bin/claude", python="/usr/local/bin/python3", entry="/opt/agr/scripts/review.py")
+    return record
+
+
+def environment(home, repo, container=False):
+    home = str(home)
+    return {
+        "HOME": home, "CLAUDE_CONFIG_DIR": home + "/.claude", "PATH": "/usr/local/bin:/usr/bin:/bin" if container else os.defpath,
+        "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
+        "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "IS_SANDBOX": "1",
+        "TERM": "xterm-256color",
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": str(repo),
+    }
+
+
+def mount(source, destination, readonly=False):
+    output = io.StringIO()
+    fields = ["type=bind", "source=" + str(source), "target=" + str(destination)]
+    if readonly:
+        fields.append("readonly")
+    csv.writer(output, lineterminator="").writerow(fields)
+    return output.getvalue()
+
+
+def container_command(journal, number):
+    record = journal.round(number)
+    runtime = record["runtime"]
+    repo = Path(journal.manifest["repo"])
+    name = "agr-" + record["session_id"]
+    args = docker_client(runtime)['command'] + ["run", "--rm", "--init", "--interactive", "--tty", "--name", name,
+            "--label", "agr.session=" + record["session_id"], "--user", runtime["user"],
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
+            "--tmpfs", "/tmp:rw,exec,nosuid,mode=1777", "--workdir", str(repo)]
+    args += ["--mount", mount(repo, repo, True)]
+    common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
+    if not common.is_relative_to(repo):
+        args += ["--mount", mount(common, common, True)]
+    output = journal.round_directory(number) / "output"
+    args += ["--mount", mount(output, output)]
+    args += ["--mount", mount(runtime["credentials_file"], CONTAINER_CREDENTIALS)]
+    for key, value in environment("/tmp/agr-home", repo, container=True).items():
+        args += ["--env", key + "=" + value]
+    args += [runtime["image"], "_review", str(journal.directory), str(number)]
+    return args
+
+
+def cleanup_container(record):
+    if record.get("runtime", {}).get("mode") != "docker":
+        return
+    name = "agr-" + record["session_id"]
+    client = docker_client(record['runtime'])
+    result = subprocess.run(client['command'] + ["container", "inspect", "--format", '{{json .}}', name], env=client['environment'], capture_output=True, text=True, timeout=15)
+    if result.returncode:
+        if "No such container" in result.stderr or "No such object" in result.stderr:
+            return
+        raise ReviewError("Cannot determine container state: " + result.stderr.strip())
+    try:
+        container = json.loads(result.stdout)
+        owner = container['Config']['Labels'].get('agr.session')
+        identifier = container['Id']
+        if not isinstance(identifier, str) or not re.fullmatch(r'[a-f0-9]{64}', identifier):
+            raise ValueError('Invalid container ID')
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise ReviewError('Cannot determine container ownership: ' + name) from error
+    if owner != record["session_id"]:
+        raise ReviewError("Container ownership changed; retained " + name)
+    result = subprocess.run(client['command'] + ["container", "rm", "--force", identifier], env=client['environment'], capture_output=True, text=True, timeout=60)
+    if result.returncode and 'No such container' not in result.stderr and 'No such object' not in result.stderr:
+        raise ReviewError('Container cleanup failed: ' + result.stderr.strip())
+
+
+def inner_review(journal, number):
+    from .runner import claude_command, subscription_auth
+    record = journal.round(number)
+    runtime = record["runtime"]
+    home = Path(os.environ["HOME"])
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config = home / ".claude"
+    config.mkdir(exist_ok=True, mode=0o700)
+    if runtime["mode"] == "native":
+        if digest(runtime["executable"]) != runtime["sha256"]:
+            raise ReviewError("Managed Claude changed since this round was prepared")
+    credentials = runtime["credentials_file"] if runtime["mode"] == "native" else CONTAINER_CREDENTIALS
+    (config / ".credentials.json").symlink_to(credentials)
+    executable = runtime["executable"]
+    version = checked([executable, "--version"])
+    if version.split()[0] != runtime["version"]:
+        raise ReviewError("Managed Claude version changed: " + version)
+    auth = subscription_auth([executable], journal.manifest["repo"])
+    write_json(home / '.claude.json', {
+        'hasCompletedOnboarding': True, 'lastOnboardingVersion': runtime['version'],
+        'theme': 'dark', 'bypassPermissionsModeAccepted': True,
+        'projects': {journal.manifest['repo']: {'hasTrustDialogAccepted': True, 'hasCompletedProjectOnboarding': True}},
+    })
+    write_json(config / '.claude.json', read_json(home / '.claude.json'))
+    write_json(journal.round_directory(number) / 'output' / '.runtime.json', {'auth': auth, 'version': runtime['version']})
+    args = claude_command(record, journal.round_directory(number))
+    os.execve(executable, args, dict(os.environ))
