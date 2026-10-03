@@ -147,5 +147,68 @@ class ReportingTests(RepositoryTest):
         path = output / 'drafts' / 'plain.md'
         path.write_text('A concrete defect\n\nEvidence and a suggested fix.')
         finding = publish(output, 'finding', path)
-        self.assertEqual(finding['severity'], 'unclassified')
+        self.assertEqual(finding['severity'], 'PZ')
         self.assertEqual(finding['body'], path.read_text())
+        self.assertTrue((output / 'findings' / (finding['id'] + '--pZ--plain.md')).is_file())
+
+    def test_priority_and_opaque_draft_name_reach_filename_without_new_fields(self):
+        record, output = self.output()
+        path = output / 'drafts' / 'regression-timeout-style-timeout.md'
+        path.write_text('Severity: P4\n\nA small consistency improvement')
+        finding = publish(output, 'finding', path)
+        published = output / 'findings' / 'r01-claude1-f001--p4--regression-timeout-style-timeout.md'
+        self.assertEqual(read_document(published)['id'], finding['id'])
+        self.assertEqual(finding['draft'], path.name)
+        self.assertNotIn('Lens:', published.read_text())
+        self.assertNotIn('Subagent:', published.read_text())
+        self.assertEqual(publish(output, 'finding', path), finding)
+        original = published.read_bytes()
+        self.journal.update_round(record['id'], status='completed')
+        self.journal.author_event('assessment', finding=finding['id'], priority='P1', reason='Larger impact', proposal='Fix')
+        item = self.journal.findings()[0]
+        self.assertEqual((item['severity'], item['priority']), ('P4', 'P1'))
+        self.assertEqual(published.read_bytes(), original)
+        self.assertEqual([file.name for file in published.parent.iterdir()], [published.name])
+
+    def test_legacy_files_share_sequence_and_keep_references_with_new_files(self):
+        record, output = self.output()
+        legacy = output / 'findings' / 'r01-claude1-f007.md'
+        legacy.parent.mkdir()
+        legacy.write_text('Severity: unclassified\nDraft: old.md\n\nLegacy finding')
+        old_draft = output / 'drafts' / 'old.md'
+        old_draft.write_text('Legacy finding')
+        old = publish(output, 'finding', old_draft)
+        self.assertEqual(old['id'], legacy.stem)
+        imported = output.parent / 'imports' / 'r01-claude1-f008.md'
+        imported.parent.mkdir()
+        imported.write_text('Severity: info\n\nImported legacy finding')
+        source = output / 'drafts' / 'general-next.md'
+        source.write_text('Severity: P4\n\nNext finding')
+        latest = publish(output, 'finding', source)
+        self.assertEqual(latest['id'], 'r01-claude1-f009')
+        items = {item['id']: item for item in self.journal.findings()}
+        self.assertEqual(items[legacy.stem]['priority'], 'PZ')
+        self.assertEqual(items[imported.stem]['priority'], 'P4')
+        self.journal.update_round(record['id'], status='completed')
+        self.journal.author_event('decision', finding=old['id'], action='defer', reason='Later')
+        following = self.running()
+        next_output = self.journal.round_directory(following) / 'output'
+        related = next_output / 'drafts' / 'related.md'
+        related.write_text('Related-To: ' + old['id'] + '\nSeverity: P2\n\nNew evidence')
+        self.assertEqual(publish(next_output, 'finding', related)['related_to'], old['id'])
+        check = next_output / 'drafts' / 'recheck.md'
+        check.write_text('Finding: ' + old['id'] + '\nStatus: still_present\n\nStill present')
+        publish(next_output, 'check', check)
+        saved = next(item for item in self.journal.findings() if item['id'] == old['id'])
+        self.assertEqual(saved['decision'], 'defer')
+        self.assertEqual(saved['verification']['status'], 'still_present')
+        self.assertTrue(legacy.is_file())
+
+    def test_long_draft_name_is_rejected_without_publishing_or_losing_the_draft(self):
+        record, output = self.output()
+        source = output / 'drafts' / ('x' * 240 + '.md')
+        source.write_text('Evidence')
+        with self.assertRaisesRegex(ReviewError, 'choose a shorter draft name'):
+            publish(output, 'finding', source)
+        self.assertTrue(source.is_file())
+        self.assertEqual(self.journal.findings(), [])

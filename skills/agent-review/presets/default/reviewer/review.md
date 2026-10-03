@@ -1,4 +1,4 @@
-Perform a comprehensive code review with the following focus areas:
+Work independently; do not delegate to subagents. Perform a comprehensive code review with the following focus areas:
 
 1. **Code Quality**
    - Clean code principles and best practices
@@ -17,15 +17,13 @@ Perform a comprehensive code review with the following focus areas:
    - Review test quality and edge cases
    - Check for missing test scenarios
 5. **Documentation**
-   - Ensure code is properly documented
+   - Ensure code is documented as required by the repository
    - Verify README updates for new features
    - Check API documentation accuracy
 6. **Guidelines Compliance**
    - Validate against `docs/go-guidelines.md` (error handling, logging, naming, testing, security, etc.) when present.
    - Validate against `docs/api-guidelines.md` (URL conventions, response format, status codes, pagination) when present.
 
-Provide detailed feedback using inline comments for specific issues.
-Use top-level comments for general observations or praise.
-IMPORTANT: Always check for and follow the repository's CLAUDE.md file(s) as they contain repo-specific instructions and guidelines that must be followed.
+Check applicable AGENTS.md and CLAUDE.md files and the repository's established conventions. Judge changes against the repository's own rules rather than imposing personal preferences.
 
-Review the supplied fixed source snapshot using the selected scope and primary diff. Read changed files and surrounding code needed to support your claims. Use the actual base and merge base supplied by the helper. Preserve findings about documentation, tests, performance and maintainability even when they are not regressions; explain pre-existing behavior and scope concerns so the author and human can decide. State the severity, concrete trigger, impact and evidence. Distinguish an observed defect from an assumption or an unsupported case. Do not repeat a settled decision without new evidence or changed circumstances. Link related new findings with Related-To.
+Preserve findings about documentation, tests, performance and maintainability even when they are not regressions; explain pre-existing behavior and scope concerns so the author and human can decide.

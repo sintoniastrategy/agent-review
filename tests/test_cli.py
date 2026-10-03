@@ -10,7 +10,7 @@ from agr import runtime
 
 
 class CLITests(RepositoryTest):
-    def test_queue_table_reads_saved_findings_without_changing_priority_order_in_json(self):
+    def test_queue_table_and_json_sort_saved_findings_by_current_priority(self):
         first = self.running()
         low = self.journal.add_finding(first, {'body': 'Low issue', 'title': 'Saved low priority title', 'severity': 'P3'})
         high = self.journal.add_finding(first, {'body': 'Critical issue', 'severity': 'P0'})
@@ -20,7 +20,7 @@ class CLITests(RepositoryTest):
         self.journal.reviewer_event(second, 'verification', finding=low['id'], status='resolved', reason='Checked')
         before = self.journal.export()
         result = subprocess.run([sys.executable, str(ENTRY), '--repo', str(self.repo), 'queue', '--table'], capture_output=True, text=True, check=True)
-        self.assertLess(result.stdout.index('R1-F1'), result.stdout.index('R1-F2'))
+        self.assertLess(result.stdout.index('R1-F2'), result.stdout.index('R1-F1'))
         self.assertIn('Saved low priority title', result.stdout)
         self.assertIn('Deferred', result.stdout)
         self.assertIn('Confirmed resolved', result.stdout)
@@ -132,3 +132,18 @@ class CLITests(RepositoryTest):
         self.assertEqual(imported["imported_by_author"]["artifact"], str(directory / "response.md"))
         self.assertEqual(self.command("next")["decision"], "pending")
         self.assertEqual((directory / "response.md").read_text(), imported["body"])
+        self.assertTrue((directory / 'imports' / (imported['id'] + '--p1--import.md')).is_file())
+
+    def test_new_and_legacy_priority_filters_and_assessments(self):
+        number = self.running()
+        info = self.journal.add_finding(number, {'body': 'Optional improvement', 'severity': 'P4'})
+        undef = self.journal.add_finding(number, {'body': 'Needs assessment'})
+        for selector in ('P4', 'info'):
+            self.assertEqual([item['id'] for item in self.command('queue', '--priority', selector)], [info['id']])
+        for selector in ('PZ', 'unclassified'):
+            self.assertEqual([item['id'] for item in self.command('queue', '--priority', selector)], [undef['id']])
+        self.command('assess', undef['id'], '--priority', 'P4', '--reason', 'Optional nit', '--proposal', 'Leave')
+        self.command('assess', info['id'], '--priority', 'PZ', '--reason', 'Impact unclear', '--proposal', 'Discuss')
+        findings = self.command('queue')
+        self.assertEqual([(item['id'], item['priority']) for item in findings], [(undef['id'], 'P4'), (info['id'], 'PZ')])
+        self.assertEqual([item['severity'] for item in findings], ['PZ', 'P4'])

@@ -101,6 +101,10 @@ It shows effective settings and checks prerequisites without starting a reviewer
 
 **Upgrading from JSON configuration:** convert each `config.json` to `config.ini` at the same location. Write `[review]`, then one `key = value` per line, without JSON braces, commas or quotes. A legacy file without an INI replacement produces a migration error. Once the INI exists, only it is used. Review journal files are unaffected.
 
-[Prompt presets](skills/agent-review/presets/default) separate review criteria, reviewer policy, follow-ups, discussion and fixes. Keep custom presets outside the managed installation; set `preset = /absolute/path/to/your/preset` in your INI. Personal and worktree settings survive updates.
+Prompt presets define only what to review and how. [default](skills/agent-review/presets/default/reviewer/review.md) is an independent comprehensive review. [lenses](skills/agent-review/presets/lenses/reviewer/review.md) delegates three independent perspectives: regressions, repository style and rules, and comprehensive review. Subagents save finding drafts; the main reviewer checks evidence, reconciles duplicates and publishes one set of results. Select it with `preset = lenses` in your INI or `prepare --preset lenses` for one run. `default` remains the default.
+
+Reviewer policy, publication, follow-ups, discussion and fixing instructions come from the skill and cannot be replaced by a preset. Custom presets need only `reviewer/review.md`; other files in older presets are ignored. Keep custom presets outside the managed installation and set `preset = /absolute/path/to/your/preset`. Personal and worktree settings survive updates, and prepared reviews retain their frozen prompts.
+
+Published filenames look like `r02-claude1-f032--p1--regression-timeout.md`: stable ID, original reviewer severity, and final draft name. A merged finding may keep one source draft name or join names with hyphens. The helper treats that name as opaque text. Human output sorts by priority and shows **crit, high, med, low, info, undef** for P0, P1, P2, P3, P4, PZ; missing severity is undef. Old filenames and the legacy severities `info` and `unclassified` remain readable.
 
 [Skill instructions](skills/agent-review/SKILL.md) | [Commands, configuration and recovery](skills/agent-review/references/commands.md)

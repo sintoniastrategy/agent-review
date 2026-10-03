@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 from unittest.mock import patch
 
 from .support import RepositoryTest
@@ -11,21 +12,17 @@ class ConfigurationTests(RepositoryTest):
     def command(self, *args):
         return execute(parser().parse_args(['--repo', str(self.repo), *args]))
 
-    def preset(self, path, review='Custom review policy\n', workflow='Custom workflow\n'):
-        path.mkdir(parents=True, exist_ok=True)
-        for key, relative in configuration.PROMPT_FILES.items():
-            target = path / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(review if key == 'review' else workflow, encoding='utf-8')
+    def preset(self, path, review='Custom review criteria\n'):
+        target = path / 'reviewer/review.md'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(review, encoding='utf-8')
         return path
 
     def skill(self):
         path = Path(self.temporary.name) / 'skill'
         self.preset(path / 'presets' / 'focused')
         (path / 'defaults.ini').write_text('[review]\nagent = claude\nmodel = sonnet\neffort = high\npreset = focused\nscope = full\nruntime = docker\nauth = auto\ncredentials_file =\nwindow_name =\n')
-        protocol = path / 'prompts/reviewer/protocol.md'
-        protocol.parent.mkdir(parents=True)
-        protocol.write_text((configuration.SKILL / 'prompts/reviewer/protocol.md').read_text())
+        shutil.copytree(configuration.SKILL / 'prompts', path / 'prompts')
         return path
 
     def test_bundled_defaults_reach_frozen_round_and_launch_arguments(self):
@@ -39,8 +36,8 @@ class ConfigurationTests(RepositoryTest):
         workflow = (directory / 'input/policy.md').read_text()
         self.assertIn('Clean code principles', review)
         self.assertIn('explain pre-existing behavior and scope concerns', review)
-        self.assertNotIn('do not delegate to subagents', review)
-        self.assertIn('do not delegate to subagents', workflow)
+        self.assertIn('do not delegate to subagents', review)
+        self.assertNotIn('do not delegate to subagents', workflow)
         self.assertIn('publication command with finish', (directory / 'input/protocol.md').read_text())
         self.assertIn(review.rstrip() + '\n\n' + workflow.rstrip(), (directory / 'prompt.md').read_text())
         self.assertIn('Model: opus | effort: xhigh | preset: default', progress.describe(self.journal, record['id']))
@@ -64,7 +61,7 @@ class ConfigurationTests(RepositoryTest):
         self.assertEqual(configuration.local(self.repo), {'runtime': 'native'})
 
     def test_prepare_precedence_and_preset_replacement(self):
-        custom = self.preset(self.repo / '.agr/custom', 'Only check data loss.\n', 'Delegate focused checks.\n')
+        custom = self.preset(self.repo / '.agr/custom', 'Only check data loss.\nDelegate focused checks.\n')
         with patch('agr.configuration.SKILL', self.skill()):
             self.assertEqual(configuration.load_review(self.repo)['model'], 'sonnet')
             self.write_settings({'model': 'opus', 'effort': 'low'})
@@ -78,7 +75,7 @@ class ConfigurationTests(RepositoryTest):
         self.assertEqual(configuration.load_review(self.repo)['model'], 'opus')
         self.assertEqual(configuration.load_review(self.repo)['preset'], 'default')
         prompt = (self.journal.round_directory(record['id']) / 'prompt.md').read_text()
-        self.assertTrue(prompt.startswith('Only check data loss.\n\nDelegate focused checks.\n'))
+        self.assertTrue(prompt.startswith('Only check data loss.\nDelegate focused checks.\n'))
         self.assertNotIn('do not delegate to subagents', prompt)
         self.assertNotIn('Clean code principles', prompt)
         self.assertIn('Publication command:', prompt)
@@ -89,7 +86,7 @@ class ConfigurationTests(RepositoryTest):
         record = self.prepared()
         directory = self.journal.round_directory(record['id'])
         originals = {name: (directory / name).read_bytes() for name in ('prompt.md', 'input/review.md', 'input/policy.md')}
-        self.preset(custom, 'Changed review\n', 'Changed workflow\n')
+        self.preset(custom, 'Changed review\n')
         self.write_settings({'model': 'opus', 'effort': 'max', 'preset': 'default'})
         frozen = self.journal.round(record['id'])
         self.assertEqual((frozen['model'], frozen['effort'], frozen['preset']), ('sonnet', 'high', str(custom)))
@@ -117,10 +114,10 @@ class ConfigurationTests(RepositoryTest):
         incomplete = self.repo / '.agr/incomplete'
         incomplete.mkdir()
         (incomplete / 'reviewer').mkdir()
-        (incomplete / 'reviewer/review.md').write_text('Policy')
+        (incomplete / 'reviewer/review.md').write_text(' \n')
         cases = (
             ({'preset': 'missing'}, 'Cannot read preset file'),
-            ({'preset': str(incomplete)}, 'policy.md'),
+            ({'preset': str(incomplete)}, 'must not be empty'),
             ({'model': ''}, 'model must be'),
             ({'effort': 'extreme'}, 'Effort must be'),
             ({'agent': 'codex'}, 'not implemented'),
@@ -135,6 +132,69 @@ class ConfigurationTests(RepositoryTest):
                         self.command('prepare')
                     setup.assert_not_called()
                 self.assertEqual(self.journal.rows('rounds'), [])
+
+    def test_custom_presets_cannot_replace_skill_instructions(self):
+        custom = self.preset(self.repo / '.agr/custom', 'Check compatibility.\n')
+        expected = configuration.load_review(self.repo)
+        for relative in configuration.PROMPT_FILES.values():
+            path = custom / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'\xff')
+        self.write_settings({'preset': str(custom)})
+        selected = configuration.load_review(self.repo)
+        self.assertEqual(selected['review_prompt'], 'Check compatibility.\n')
+        for part in configuration.PROMPT_FILES:
+            self.assertEqual(selected[part + '_prompt'], expected[part + '_prompt'])
+        for phase in ('discuss', 'fix'):
+            self.assertEqual(self.command('instructions', phase), expected[phase + '_prompt'])
+        self.write_settings({'preset': 'missing'})
+        self.assertEqual(self.command('instructions', 'discuss'), expected['discuss_prompt'])
+
+    def test_lenses_first_and_followup_prompts_share_frozen_skill_instructions(self):
+        selected = configuration.load_review(self.repo, {'preset': 'lenses'})
+        with patch('agr.cli.runtime.setup', return_value=self.fake_runtime()):
+            first = self.command('prepare', '--preset', 'lenses')
+        directory = self.journal.round_directory(first['id'])
+        self.assertEqual(first['preset'], 'lenses')
+        self.assertEqual((directory / 'input/review.md').read_text(), selected['review_prompt'])
+        self.assertFalse((directory / 'input/followup.md').exists())
+        first_prompt = (directory / 'prompt.md').read_text()
+        self.assertIn('three independent subagents', first_prompt)
+        self.assertNotIn('Work independently; do not delegate to subagents.', first_prompt)
+        self.journal.update_round(first['id'], status='completed')
+        second = self.prepared(preset='lenses', scope='changes')
+        following = self.journal.round_directory(second['id'])
+        self.assertEqual(second['previous_review'], first['id'])
+        for part in ('review', 'policy', 'protocol', 'followup'):
+            expected = selected[part + '_prompt']
+            self.assertEqual((following / 'input' / (part + '.md')).read_text(), expected)
+            self.assertIn(expected.rstrip(), (following / 'prompt.md').read_text())
+        self.assertEqual((directory / 'prompt.md').read_text(), first_prompt)
+
+    def test_missing_common_prompt_fails_before_runtime_setup(self):
+        skill = self.skill()
+        (skill / 'prompts/reviewer/policy.md').unlink()
+        with patch('agr.configuration.SKILL', skill), patch('agr.cli.runtime.setup') as setup:
+            with self.assertRaisesRegex(ReviewError, 'Cannot read skill prompt file:.*policy.md'):
+                self.command('prepare')
+            setup.assert_not_called()
+        self.assertEqual(self.journal.rows('rounds'), [])
+
+    def test_common_prompt_edits_apply_only_to_future_preparations(self):
+        skill = self.skill()
+        with patch('agr.configuration.SKILL', skill):
+            first = self.prepared()
+            directory = self.journal.round_directory(first['id'])
+            saved = {name: (directory / name).read_bytes() for name in ('prompt.md', 'input/policy.md', 'input/protocol.md')}
+            (skill / 'prompts/reviewer/policy.md').write_text('Updated common policy.\n')
+            (skill / 'prompts/reviewer/protocol.md').write_text('Updated publication instructions.\n')
+            self.journal.update_round(first['id'], status='interrupted')
+            second = self.prepared()
+            following = self.journal.round_directory(second['id'])
+            self.assertIn('Updated common policy.', (following / 'prompt.md').read_text())
+            self.assertIn('Updated publication instructions.', (following / 'prompt.md').read_text())
+            for name, content in saved.items():
+                self.assertEqual((directory / name).read_bytes(), content)
 
     def test_invalid_ini_reports_its_path_without_rewriting_or_installing(self):
         config = self.repo / '.agr/config.ini'

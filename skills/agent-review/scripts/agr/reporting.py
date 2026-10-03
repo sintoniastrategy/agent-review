@@ -3,7 +3,7 @@ import re
 
 from . import ReviewError, now, read_json, write_json
 from .documents import draft, locked, read_document, write_document, FINDING_FIELDS
-from . import names
+from . import names, priorities
 
 
 def files(output):
@@ -68,19 +68,24 @@ def publish(output, kind, source=None):
         if kind == 'finding':
             if values.get('related_to') and values['related_to'] not in context['previous_findings']:
                 raise ReviewError('Related-To must refer to a previous finding')
-            data.setdefault('severity', 'unclassified')
+            data.setdefault('severity', 'PZ')
             data.setdefault('title', values['body'].splitlines()[0][:160])
             paths = list((output / 'findings').glob('*.md'))
             for path in paths:
                 existing = read_result(path, context)
                 if existing.get('draft') == source.name:
                     fields = FINDING_FIELDS + ('body',)
-                    if any(existing.get(key) != data.get(key) for key in fields):
+                    saved = {key: existing.get(key) for key in fields}
+                    incoming = {key: data.get(key) for key in fields}
+                    for item in (saved, incoming):
+                        item['severity'] = priorities.canonical(item['severity'])
+                    if saved != incoming:
                         raise ReviewError('An already published draft was changed; use a new draft')
                     return existing
             paths += list((output.parent / 'imports').glob('*.md'))
-            index = max((names.parse_finding(path.stem)[3] for path in paths), default=0) + 1
-            path = output / 'findings' / (names.finding(context['prefix'], index) + '.md')
+            index = max((names.parse_finding(names.finding_file_id(path.stem))[3] for path in paths), default=0) + 1
+            identifier = names.finding(context['prefix'], index)
+            path = output / 'findings' / names.finding_filename(identifier, data['severity'], source.stem)
         elif kind == 'check':
             if values['finding'] not in context['previous_findings']:
                 raise ReviewError('Only findings from earlier rounds can be rechecked')

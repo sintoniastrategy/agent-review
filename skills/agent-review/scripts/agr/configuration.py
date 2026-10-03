@@ -11,7 +11,7 @@ RUNTIME_KEYS = ('runtime', 'auth', 'credentials_file', 'window_name')
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 SCOPES = ('full', 'changes')
 PROMPT_FILES = {
-    'review': 'reviewer/review.md', 'policy': 'reviewer/policy.md',
+    'policy': 'reviewer/policy.md', 'protocol': 'reviewer/protocol.md',
     'followup': 'reviewer/followup.md', 'discuss': 'author/discuss.md', 'fix': 'author/fix.md',
 }
 
@@ -66,6 +66,20 @@ def defaults():
     return read_ini(SKILL / 'defaults.ini', required=True)
 
 
+def read_prompt(path, source):
+    try:
+        text = path.read_text(encoding='utf-8')
+    except (OSError, UnicodeError) as error:
+        raise ReviewError('Cannot read ' + source + ' file: ' + str(path) + ': ' + str(error)) from error
+    if not text.strip():
+        raise ReviewError(source.capitalize() + ' file must not be empty: ' + str(path))
+    return text
+
+
+def skill_prompt(part):
+    return read_prompt(SKILL / 'prompts' / PROMPT_FILES[part], 'skill prompt')
+
+
 def load_review(repo, overrides=None, values=None, global_values=None):
     settings = {key: value for key, value in effective(repo, values, global_values).items() if key in REVIEW_KEYS}
     settings.update({key: value for key, value in (overrides or {}).items() if value is not None})
@@ -89,13 +103,7 @@ def load_review(repo, overrides=None, values=None, global_values=None):
             directory = Path(repo) / directory
         directory = directory.resolve()
         settings['preset'] = str(directory)
-    for part, relative in {**PROMPT_FILES, 'protocol': str(SKILL / 'prompts/reviewer/protocol.md')}.items():
-        path = directory / relative
-        try:
-            text = path.read_text(encoding='utf-8')
-        except (OSError, UnicodeError) as error:
-            raise ReviewError('Cannot read preset file: ' + str(path) + ': ' + str(error)) from error
-        if not text.strip():
-            raise ReviewError('Preset file must not be empty: ' + str(path))
-        settings[part + '_prompt'] = text
+    settings['review_prompt'] = read_prompt(directory / 'reviewer/review.md', 'preset')
+    for part in PROMPT_FILES:
+        settings[part + '_prompt'] = skill_prompt(part)
     return settings

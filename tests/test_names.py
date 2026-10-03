@@ -35,6 +35,21 @@ class NamesTests(RepositoryTest):
             with self.subTest(value=value), self.assertRaises(ReviewError):
                 execute(parser().parse_args(['--repo', str(self.repo), 'report', value]))
 
+    def test_finding_filenames_keep_identity_separate_from_priority_and_draft(self):
+        identifier = 'r02-claude1-f032'
+        for severity, marker in (('P0', 'p0'), ('P1', 'p1'), ('P2', 'p2'), ('P3', 'p3'), ('P4', 'p4'), ('PZ', 'pZ'), ('info', 'p4'), ('unclassified', 'pZ')):
+            with self.subTest(severity=severity):
+                filename = names.finding_filename(identifier, severity, 'regression-timeout-general-timeout')
+                self.assertEqual(filename, identifier + '--' + marker + '--regression-timeout-general-timeout.md')
+                self.assertEqual(names.finding_file_id(filename[:-3]), identifier)
+        self.assertEqual(names.finding_file_id(identifier), identifier)
+        self.assertEqual(names.finding_filename(identifier, 'PZ', 'import with spaces'), identifier + '--pZ--import-with-spaces.md')
+        for stem in (identifier + '--p5--draft', identifier + '--pz--draft', identifier + '--pZ--', identifier + '--p1--../draft', 'r2-claude1-f032--p1--draft'):
+            with self.subTest(stem=stem), self.assertRaises(ReviewError):
+                names.finding_file_id(stem)
+        with self.assertRaises(ReviewError):
+            names.parse_finding(identifier + '--p1--draft')
+
     def test_imports_continue_the_reviewer_finding_sequence(self):
         record = self.prepared()
         self.journal.update_round(record['id'], status='running')

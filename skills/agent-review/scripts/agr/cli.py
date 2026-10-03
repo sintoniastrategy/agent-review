@@ -14,6 +14,7 @@ from . import tmux
 from . import runtime
 from . import progress
 from . import configuration
+from . import priorities
 from .names import round_name
 
 
@@ -58,7 +59,7 @@ def parser():
     watch.add_argument('round', metavar='REVIEWER')
     commands.add_parser("next").add_argument('--human', action='store_true')
     queue_command = commands.add_parser('queue')
-    queue_command.add_argument('--priority', action='append', choices=('P0', 'P1', 'P2', 'P3', 'info', 'unclassified'))
+    queue_command.add_argument('--priority', action='append', choices=priorities.VALUES)
     queue = queue_command.add_mutually_exclusive_group()
     queue.add_argument('--human', action='store_true')
     queue.add_argument('--table', action='store_true')
@@ -67,7 +68,7 @@ def parser():
     finding.add_argument('--human', action='store_true')
     assess = commands.add_parser("assess")
     assess.add_argument("id")
-    assess.add_argument("--priority", required=True, choices=("P0", "P1", "P2", "P3", "info", "unclassified"))
+    assess.add_argument("--priority", required=True, choices=priorities.VALUES)
     assess.add_argument("--reason", required=True)
     assess.add_argument("--proposal", required=True)
     assess.add_argument('--recommendation', choices=('fix', 'leave', 'discuss'))
@@ -172,7 +173,7 @@ def markdown(data, selected):
 def execute(args):
     repo = root(args.repo)
     if args.command == 'instructions':
-        return configuration.load_review(repo)[args.phase + '_prompt']
+        return configuration.skill_prompt(args.phase)
     if args.command == 'preflight':
         settings = runtime.configuration(repo)
         selected = configuration.load_review(repo)
@@ -261,7 +262,8 @@ def execute(args):
     if command in {"next", "queue", "finding"}:
         findings = journal.findings()
         if command == 'queue' and args.priority:
-            findings = [item for item in findings if item['priority'] in args.priority]
+            selected = {priorities.canonical(value) for value in args.priority}
+            findings = [item for item in findings if item['priority'] in selected]
         if command == 'queue' and args.table:
             return progress.finding_table(findings, journal.rows('rounds'))
         if command == "next":
@@ -299,7 +301,7 @@ def execute(args):
         artifact = (directory / args.source_artifact).resolve()
         if not artifact.is_relative_to(directory) or not artifact.is_file() or not args.reason.strip():
             raise ReviewError("Supply an existing raw artifact from this round and an import reason")
-        return journal.add_finding(args.round, values, imported={"artifact": str(artifact), "reason": args.reason, "at": now()})
+        return journal.add_finding(args.round, values, imported={"artifact": str(artifact), "reason": args.reason, "at": now()}, draft_name=args.markdown_file.stem)
     if command == "report":
         return {
             "round": journal.round(args.round),
