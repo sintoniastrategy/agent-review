@@ -45,7 +45,7 @@ prompt = read_input()
 if 'Perform a comprehensive code review' not in prompt:
     raise SystemExit(9)
 output = Path(re.search(r'^Output directory: (.*)$', prompt, re.MULTILINE)[1])
-helper = Path(__file__).resolve().parents[1] / 'skills' / 'local-review' / 'scripts' / 'review.py'
+helper = Path(__file__).resolve().parents[1] / 'skills' / 'agent-review' / 'scripts' / 'review.py'
 (output / 'progress.txt').write_text('Checking the source and previous decisions')
 print('Checking the source and previous decisions', flush=True)
 

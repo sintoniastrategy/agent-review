@@ -26,7 +26,7 @@ def local(repo, values=None):
 
 
 def global_path():
-    return Path.home() / '.local/share/agent-review/config.json'
+    return Path.home() / '.local/share/sst-agent-review/config.json'
 
 
 def global_settings(values=None):

@@ -19,7 +19,7 @@ from .names import round_name
 
 
 def parser():
-    result = argparse.ArgumentParser(description="Local review skill helper; Python 3.9+, Git, tmux and managed Claude")
+    result = argparse.ArgumentParser(description="SST Agent Review helper; Python 3.9+, Git, tmux and managed Claude")
     result.add_argument("--repo", default=".")
     result.add_argument("--session")
     commands = result.add_subparsers(dest="command", required=True)

@@ -73,7 +73,7 @@ class TmuxTests(TmuxTest):
         result = launch_round(self.journal, second["id"], socket=self.socket, caller_pane="test-host:0.0")
         self.assertEqual(self.terminal(second["id"])["status"], "completed")
         name = tmux.run(tmux.command(self.socket) + ["display-message", "-p", "-t", result["tmux"]["window"], "#{window_name}"])
-        self.assertEqual(name, "agr@test/feature-r02-claude1")
+        self.assertEqual(name, "agr@test/feature@r02-claude1")
         panes = tmux.run(tmux.command(self.socket) + ["list-panes", "-a", "-F", "#{pane_id}"])
         self.assertNotIn(finished["tmux"]["pane"], panes.splitlines())
         self.assertEqual(len(self.journal.findings()), 2)

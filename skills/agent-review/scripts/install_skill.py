@@ -36,7 +36,7 @@ def extract(archive, destination):
         seen = set()
         for member in bundle:
             relative = PurePosixPath(member.name)
-            if relative.is_absolute() or '..' in relative.parts or not relative.parts or relative.parts[0] != 'local-review':
+            if relative.is_absolute() or '..' in relative.parts or not relative.parts or relative.parts[0] != 'agent-review':
                 raise ValueError('Unexpected archive path: ' + member.name)
             if member.name in seen or not (member.isfile() or member.isdir()):
                 raise ValueError('Unexpected archive entry: ' + member.name)
@@ -49,7 +49,7 @@ def extract(archive, destination):
                 with bundle.extractfile(member) as source, target.open('xb') as output:
                     while chunk := source.read(1024 * 1024):
                         output.write(chunk)
-    if not all((destination / 'local-review' / path).is_file() for path in REQUIRED):
+    if not all((destination / 'agent-review' / path).is_file() for path in REQUIRED):
         raise ValueError('Release is missing required skill files')
 
 
@@ -65,15 +65,15 @@ def selected_skill(root):
     current = root / 'current'
     if current.is_symlink():
         release = current.resolve(strict=True)
-        if release.parent == root / 'releases' and (release / 'local-review/SKILL.md').is_file():
-            return release / 'local-review'
+        if release.parent == root / 'releases' and (release / 'agent-review/SKILL.md').is_file():
+            return release / 'agent-review'
     if current.exists() or current.is_symlink():
         raise ValueError('Refusing to replace an unmanaged installation: ' + str(current))
     return None
 
 
-def skill_links(home, name='sst-local-review'):
-    return [home / '.agents/skills' / name, home / '.claude/skills' / name]
+def skill_links(home):
+    return [home / '.agents/skills/sst-agent-review', home / '.claude/skills/sst-agent-review']
 
 
 def check_links(home, target):
@@ -84,20 +84,8 @@ def check_links(home, target):
             raise ValueError('Existing skill is not managed by this installer: ' + str(link))
 
 
-def link_skill(root, home):
-    target = root / 'current/local-review'
-    check_links(home, target)
-    for link in skill_links(home):
-        if not link.is_symlink():
-            link.parent.mkdir(parents=True, exist_ok=True)
-            link.symlink_to(target, target_is_directory=True)
-    for link in skill_links(home, 'local-review'):
-        if link.is_symlink() and link.resolve() == target.resolve():
-            link.unlink()
-
-
 def activate(root, home, release):
-    target = root / 'current/local-review'
+    target = root / 'current/agent-review'
     check_links(home, target)
     for link in skill_links(home):
         if not link.is_symlink():
@@ -109,7 +97,6 @@ def activate(root, home, release):
         os.replace(temporary, root / 'current')
     finally:
         temporary.unlink(missing_ok=True)
-    link_skill(root, home)
 
 
 def update(root, home, automatic=False):
@@ -119,10 +106,9 @@ def update(root, home, automatic=False):
         current = selected_skill(root)
         stamp = root / 'last-check'
         if automatic and current is not None and stamp.is_file() and 0 <= time.time() - stamp.stat().st_mtime < INTERVAL:
-            link_skill(root, home)
             print('Update check already attempted within the last 24 hours.')
             return current
-        check_links(home, root / 'current/local-review')
+        check_links(home, root / 'current/agent-review')
         stamp.write_text(str(time.time()) + '\n', encoding='utf-8')
         print('Checking the latest stable agent-review release...', flush=True)
         with tempfile.TemporaryDirectory(prefix='.download-', dir=root) as directory:
@@ -138,7 +124,7 @@ def update(root, home, automatic=False):
             if release.exists():
                 if release.is_symlink() or json.loads((release / 'release.json').read_text(encoding='utf-8')) != manifest:
                     raise ValueError('Installed release differs from the published release: ' + str(release))
-                if not all((release / 'local-review' / path).is_file() for path in REQUIRED):
+                if not all((release / 'agent-review' / path).is_file() for path in REQUIRED):
                     raise ValueError('Installed release is incomplete: ' + str(release))
             else:
                 print('Downloading ' + version + '...', flush=True)
@@ -152,11 +138,11 @@ def update(root, home, automatic=False):
                 release.parent.mkdir(parents=True, exist_ok=True)
                 unpacked.rename(release)
             activate(root, home, release)
-            if current != release / 'local-review':
+            if current != release / 'agent-review':
                 print('Installed ' + version + '. Read its SKILL.md before continuing.')
             else:
                 print('Already installed: ' + version)
-            return release / 'local-review'
+            return release / 'agent-review'
 
 
 def manual_command(home):
@@ -171,41 +157,32 @@ def show_skill(skill):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Install or update SST Local Review; no sudo or background service.')
+    parser = argparse.ArgumentParser(description='Install or update SST Agent Review; no sudo or background service.')
     parser.add_argument('--check', action='store_true', help='Check this managed installation at most once every 24 hours')
-    parser.add_argument('--links-only', action='store_true', help='Migrate owned skill links without downloading a release')
     parser.add_argument('--home', type=Path, help='Install below this home directory instead of the current user home')
     args = parser.parse_args(argv)
     if sys.version_info < (3, 9) or platform.system() not in {'Linux', 'Darwin'}:
         parser.error('Python 3.9+ on Linux or macOS is required')
     script = Path(__file__).resolve()
-    root = managed_root(script) if args.check or args.links_only else None
-    if (args.check or args.links_only) and root is None:
+    root = managed_root(script) if args.check else None
+    if args.check and root is None:
         print('Manual or development copy: automatic updates are disabled.')
         show_skill(script.parent.parent)
         return 0
     home = root.parents[2] if root else (args.home or Path.home()).expanduser().resolve()
-    root = root or home / '.local/share/agent-review'
+    root = root or home / '.local/share/sst-agent-review'
     try:
-        if args.links_only:
-            with (root / 'update.lock').open('a') as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                skill = selected_skill(root)
-                if skill is None:
-                    raise ValueError('No active managed installation')
-                link_skill(root, home)
-        else:
-            skill = update(root, home, args.check)
+        skill = update(root, home, args.check)
     except (OSError, ValueError, tarfile.TarError) as error:
         print('Update unavailable: ' + str(error), file=sys.stderr)
         print('Run in a normal terminal outside the agent sandbox:\n' + manual_command(home), file=sys.stderr)
-        if args.check or args.links_only:
+        if args.check:
             show_skill(script.parent.parent)
             return 0
         return 1
     show_skill(skill)
-    if not args.check and not args.links_only:
-        print('Linked for Codex and Claude Code. Start a new agent session and ask it to use SST Local Review (sst-local-review).')
+    if not args.check:
+        print('Linked for Codex and Claude Code. Start a new agent session and ask it to use SST Agent Review (sst-agent-review).')
         print('The skill checks Git, tmux, the selected runtime and Claude credentials before your first review.')
     return 0
 

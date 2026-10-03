@@ -16,7 +16,7 @@ def build(root, version, destination):
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
     paths = subprocess.check_output([
-        'git', '-C', str(root), 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'skills/local-review',
+        'git', '-C', str(root), 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'skills/agent-review',
     ]).decode().split('\0')
     archive = destination / 'agent-review.tar.gz'
     with archive.open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as compressed:
@@ -34,7 +34,7 @@ def build(root, version, destination):
     manifest = {'version': version, 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}
     (destination / 'release.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     shutil.copyfile(root / 'install.sh', destination / 'install.sh')
-    shutil.copyfile(root / 'skills/local-review/scripts/install_skill.py', destination / 'install_skill.py')
+    shutil.copyfile(root / 'skills/agent-review/scripts/install_skill.py', destination / 'install_skill.py')
     return manifest
 
 

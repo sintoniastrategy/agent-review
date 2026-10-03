@@ -25,7 +25,7 @@ def load(name, path):
     return module
 
 
-installer = load('install_skill', ROOT / 'skills/local-review/scripts/install_skill.py')
+installer = load('install_skill', ROOT / 'skills/agent-review/scripts/install_skill.py')
 builder = load('build_release', ROOT / 'scripts/build_release.py')
 
 
@@ -35,7 +35,7 @@ class InstallTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         self.home = self.directory / "user's home"
-        self.root = self.home / '.local/share/agent-review'
+        self.root = self.home / '.local/share/sst-agent-review'
         self.urls = []
         self.artifacts = {}
         self.release('v0.1.0')
@@ -50,7 +50,7 @@ class InstallTests(unittest.TestCase):
                 data = (version + '\n').encode()
                 if name == 'scripts/review.py':
                     data = ('print(' + repr(version) + ')\n').encode()
-                member = tarfile.TarInfo('local-review/' + name)
+                member = tarfile.TarInfo('agent-review/' + name)
                 member.size = len(data)
                 archive.addfile(member, io.BytesIO(data))
             if extra:
@@ -65,7 +65,7 @@ class InstallTests(unittest.TestCase):
         destination.write_bytes(self.artifacts[url])
 
     def installed_script(self, version='v0.1.0'):
-        return self.root / 'releases' / version / 'local-review/scripts/install_skill.py'
+        return self.root / 'releases' / version / 'agent-review/scripts/install_skill.py'
 
     def expired(self):
         old = time.time() - installer.INTERVAL - 1
@@ -81,14 +81,14 @@ class InstallTests(unittest.TestCase):
     def install(self):
         status, output = self.invoke('--home', str(self.home))
         self.assertEqual(status, 0, output)
-        return self.root / 'current/local-review'
+        return self.root / 'current/agent-review'
 
     def test_install_and_repeat_use_one_shared_version_and_two_links(self):
         skill = self.install()
-        self.assertEqual(skill.resolve(), self.root / 'releases/v0.1.0/local-review')
+        self.assertEqual(skill.resolve(), self.root / 'releases/v0.1.0/agent-review')
         for link in installer.skill_links(self.home):
             self.assertTrue(link.is_symlink())
-            self.assertEqual(os.readlink(link), str(self.root / 'current/local-review'))
+            self.assertEqual(os.readlink(link), str(self.root / 'current/agent-review'))
             self.assertEqual(link.resolve(), skill.resolve())
         self.install()
         archive_url = installer.RELEASES + '/download/v0.1.0/agent-review.tar.gz'
@@ -102,9 +102,9 @@ class InstallTests(unittest.TestCase):
         status, output = self.invoke('--check', script=self.installed_script())
         self.assertEqual(status, 0, output)
         self.assertIn('Installed v0.1.1. Read its SKILL.md', output)
-        self.assertIn(str(self.root / 'releases/v0.1.1/local-review/SKILL.md'), output)
+        self.assertIn(str(self.root / 'releases/v0.1.1/agent-review/SKILL.md'), output)
         self.assertEqual(subprocess.check_output([sys.executable, str(pinned)], text=True).strip(), 'v0.1.0')
-        self.assertEqual(subprocess.check_output([sys.executable, str(self.root / 'current/local-review/scripts/review.py')], text=True).strip(), 'v0.1.1')
+        self.assertEqual(subprocess.check_output([sys.executable, str(self.root / 'current/agent-review/scripts/review.py')], text=True).strip(), 'v0.1.1')
 
     def test_daily_check_uses_current_version_even_when_called_from_an_old_one(self):
         self.install()
@@ -114,7 +114,7 @@ class InstallTests(unittest.TestCase):
         status, output = self.invoke('--check', script=self.installed_script())
         self.assertEqual(status, 0, output)
         self.assertIn('within the last 24 hours', output)
-        self.assertIn('releases/v0.1.1/local-review/SKILL.md', output)
+        self.assertIn('releases/v0.1.1/agent-review/SKILL.md', output)
         self.assertEqual(self.urls, [])
 
     def test_manual_install_bypasses_daily_interval(self):
@@ -133,7 +133,7 @@ class InstallTests(unittest.TestCase):
         self.assertIn(installer.INSTALL_COMMAND, output)
         self.assertIn('normal terminal outside the agent sandbox', output)
         self.assertIn(str(original / 'SKILL.md'), output)
-        self.assertEqual((self.root / 'current/local-review').resolve(), original)
+        self.assertEqual((self.root / 'current/agent-review').resolve(), original)
         self.assertFalse(list(self.root.glob('.download-*')))
 
     def test_sandbox_denial_reports_the_path_and_keeps_installed_skill(self):
@@ -151,17 +151,17 @@ class InstallTests(unittest.TestCase):
         self.assertIn('Sandbox denied:', output)
         self.assertIn(installer.INSTALL_COMMAND, output)
         self.assertIn(str(original / 'SKILL.md'), output)
-        self.assertEqual((self.root / 'current/local-review').resolve(), original)
+        self.assertEqual((self.root / 'current/agent-review').resolve(), original)
 
     def test_bad_checksum_and_archive_entries_never_switch_current(self):
         original = self.install().resolve()
-        bad_paths = ['../escaped', '/absolute', 'local-review/../../escaped']
+        bad_paths = ['../escaped', '/absolute', 'agent-review/../../escaped']
         members = []
         for name in bad_paths:
             member = tarfile.TarInfo(name)
             member.size = 1
             members.append(member)
-        link = tarfile.TarInfo('local-review/linked')
+        link = tarfile.TarInfo('agent-review/linked')
         link.type = tarfile.SYMTYPE
         link.linkname = '/tmp'
         members.append(link)
@@ -170,24 +170,24 @@ class InstallTests(unittest.TestCase):
                 self.release('v0.1.1', member)
                 status, output = self.invoke('--home', str(self.home))
                 self.assertEqual(status, 1, output)
-                self.assertEqual((self.root / 'current/local-review').resolve(), original)
+                self.assertEqual((self.root / 'current/agent-review').resolve(), original)
                 self.assertFalse((self.root / 'releases/v0.1.1').exists())
         self.release('v0.1.1')
         self.artifacts[installer.RELEASES + '/download/v0.1.1/agent-review.tar.gz'] = b'broken download'
         status, output = self.invoke('--home', str(self.home))
         self.assertEqual(status, 1)
         self.assertIn('checksum mismatch', output)
-        self.assertEqual((self.root / 'current/local-review').resolve(), original)
+        self.assertEqual((self.root / 'current/agent-review').resolve(), original)
 
     def test_foreign_skill_is_not_overwritten_and_other_link_is_not_created(self):
-        existing = self.home / '.claude/skills/sst-local-review'
+        existing = self.home / '.claude/skills/sst-agent-review'
         existing.mkdir(parents=True)
         (existing / 'SKILL.md').write_text('my existing skill')
         status, output = self.invoke('--home', str(self.home))
         self.assertEqual(status, 1)
         self.assertIn(str(existing), output)
         self.assertEqual((existing / 'SKILL.md').read_text(), 'my existing skill')
-        self.assertFalse((self.home / '.agents/skills/sst-local-review').is_symlink())
+        self.assertFalse((self.home / '.agents/skills/sst-agent-review').is_symlink())
         self.assertFalse((self.root / 'current').is_symlink())
         self.assertEqual(self.urls, [])
 
@@ -197,7 +197,7 @@ class InstallTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             status, output = self.invoke('--home', str(self.home))
         self.assertEqual(status, 1, output)
-        self.assertEqual((self.root / 'current/local-review').resolve(), original)
+        self.assertEqual((self.root / 'current/agent-review').resolve(), original)
 
     def test_development_copy_does_not_update_or_create_user_directories(self):
         status, output = self.invoke('--check', '--home', str(self.home))
@@ -209,42 +209,16 @@ class InstallTests(unittest.TestCase):
     def test_macos_install_uses_the_same_layout(self):
         with patch.object(installer.platform, 'system', return_value='Darwin'):
             self.install()
-        self.assertTrue((self.home / '.agents/skills/sst-local-review/SKILL.md').is_file())
-        self.assertTrue((self.home / '.claude/skills/sst-local-review/SKILL.md').is_file())
+        self.assertTrue((self.home / '.agents/skills/sst-agent-review/SKILL.md').is_file())
+        self.assertTrue((self.home / '.claude/skills/sst-agent-review/SKILL.md').is_file())
 
-    def test_owned_legacy_links_migrate_even_during_daily_check_cooldown(self):
-        skill = self.install()
-        for link in installer.skill_links(self.home):
-            link.rename(link.with_name('local-review'))
-        self.urls.clear()
-        status, output = self.invoke('--check', script=self.installed_script())
-        self.assertEqual(status, 0, output)
-        self.assertEqual(self.urls, [])
-        for link in installer.skill_links(self.home):
-            self.assertEqual(link.resolve(), skill.resolve())
-            self.assertFalse(link.with_name('local-review').exists())
-
-    def test_links_only_supports_upgrade_through_the_previous_installer(self):
-        skill = self.install()
-        for link in installer.skill_links(self.home):
-            link.rename(link.with_name('local-review'))
-        self.urls.clear()
-        status, output = self.invoke('--links-only', script=self.installed_script())
-        self.assertEqual(status, 0, output)
-        self.assertEqual(self.urls, [])
-        self.assertEqual(installer.skill_links(self.home)[0].resolve(), skill.resolve())
-
-    def test_foreign_old_skill_and_global_preferences_survive_install_and_update(self):
-        old = self.home / '.agents/skills/local-review'
-        old.mkdir(parents=True)
-        (old / 'SKILL.md').write_text('Unrelated skill')
+    def test_global_preferences_survive_install_and_update(self):
         self.root.mkdir(parents=True)
         config = self.root / 'config.json'
         config.write_text('{"model":"sonnet"}\n')
         self.install()
         self.release('v0.1.1')
         self.install()
-        self.assertEqual((old / 'SKILL.md').read_text(), 'Unrelated skill')
         self.assertEqual(config.read_text(), '{"model":"sonnet"}\n')
 
     def test_release_assets_are_reproducible_and_contain_only_the_skill(self):
@@ -255,10 +229,20 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), first['sha256'])
         with tarfile.open(archive) as bundle:
             names = bundle.getnames()
-        self.assertTrue(all(name.startswith('local-review/') for name in names))
+        self.assertTrue(all(name.startswith('agent-review/') for name in names))
         self.assertFalse(any('__pycache__' in name or '.agr/' in name for name in names))
-        self.assertIn('local-review/scripts/install_skill.py', names)
-        self.assertEqual((self.directory / 'first/install_skill.py').read_bytes(), (ROOT / 'skills/local-review/scripts/install_skill.py').read_bytes())
+        self.assertIn('agent-review/scripts/install_skill.py', names)
+        self.assertEqual((self.directory / 'first/install_skill.py').read_bytes(), (ROOT / 'skills/agent-review/scripts/install_skill.py').read_bytes())
+        self.artifacts[installer.RELEASES + '/latest/download/release.json'] = (self.directory / 'first/release.json').read_bytes()
+        self.artifacts[installer.RELEASES + '/download/v0.1.0/agent-review.tar.gz'] = archive.read_bytes()
+        skill = self.install()
+        self.assertIn('name: sst-agent-review\n', (skill / 'SKILL.md').read_text())
+        helper = self.home / '.agents/skills/sst-agent-review/scripts/review.py'
+        result = subprocess.run([sys.executable, str(helper), 'configure', '--global', '--model', 'sonnet'],
+                                env={**os.environ, 'HOME': str(self.home)}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['config'], str(self.root / 'config.json'))
+        self.assertEqual(json.loads((self.root / 'config.json').read_text()), {'model': 'sonnet'})
 
     def test_bootstrap_forwards_arguments_and_cleans_failed_download(self):
         binary = self.directory / 'bin'

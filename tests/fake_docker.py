@@ -6,7 +6,7 @@ import sys
 
 
 root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(root / 'skills/local-review/scripts'))
+sys.path.insert(0, str(root / 'skills/agent-review/scripts'))
 
 from agr import write_json
 from agr.store import Journal

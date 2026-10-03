@@ -3,7 +3,7 @@ import sys
 sys.dont_write_bytecode = True
 
 if sys.version_info < (3, 9):
-    raise SystemExit("Local review requires Python 3.9 or newer")
+    raise SystemExit("SST Agent Review requires Python 3.9 or newer")
 
 from agr.cli import main
 

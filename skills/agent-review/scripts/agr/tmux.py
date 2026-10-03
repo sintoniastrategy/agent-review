@@ -33,7 +33,7 @@ def window_name(journal, number):
         common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
         name = common.parent.name[:24] + "/" + record["source"]["branch"][:24]
     name = re.sub(r"[^A-Za-z0-9_./-]+", "-", name).strip("-") or "review"
-    return 'agr@' + name + '-' + round_name(record)
+    return 'agr@' + name + '@' + round_name(record)
 
 
 def cleanup_windows(journal, current):

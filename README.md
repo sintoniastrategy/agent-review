@@ -1,4 +1,4 @@
-# SST Local Review
+# SST Agent Review
 
 Review code locally with a separate interactive Claude session while keeping implementation and discussion in your existing author agent. The author discusses critical findings individually, presents medium and low priorities in tables with recommendations, records revisable decisions, and fixes the selected items in suitable batches. The skill explains each stage and recommends a default next step; users can change the flow in conversation. You decide when to request another pass or stop.
 
@@ -12,11 +12,11 @@ On Linux or macOS, install or update with one command:
 curl -fsSL https://github.com/sintoniastrategy/agent-review/releases/latest/download/install.sh | bash
 ```
 
-The installer needs `curl` and Python 3.9+. It downloads the latest stable release, verifies the archive's SHA-256, and stores it under `~/.local/share/agent-review/releases/VERSION`. The `current` symlink selects the installed version. Skill symlinks are created in `~/.agents/skills/sst-local-review` for [Codex](https://developers.openai.com/codex/skills/) and `~/.claude/skills/sst-local-review` for [Claude Code](https://code.claude.com/docs/en/skills). An existing unrelated skill is left untouched and reported. Start a new author-agent session after the first installation and ask it to use SST Local Review (`sst-local-review`). Old installer-owned local-review links are migrated; unrelated skills are preserved. The internal archive directory stays `local-review` so existing updaters can read new releases.
+The installer needs `curl` and Python 3.9+. It downloads the latest stable release, verifies the archive's SHA-256, and stores it under `~/.local/share/sst-agent-review/releases/VERSION`. The `current` symlink selects the installed version. Skill symlinks are created in `~/.agents/skills/sst-agent-review` for [Codex](https://developers.openai.com/codex/skills/) and `~/.claude/skills/sst-agent-review` for [Claude Code](https://code.claude.com/docs/en/skills). An existing unrelated skill is left untouched and reported. Start a new author-agent session after the first installation and ask it to use SST Agent Review (`sst-agent-review`). The installed bundle is available at `~/.local/share/sst-agent-review/current/agent-review`.
 
 At skill entry, the author checks for updates at most once per 24 hours. After a successful update it reads the new instructions and pins the concrete version path for the invocation. Already running author workflows and reviewers keep their previous version; installed versions are retained. There is no system service, timer, API token or `gh` requirement. A sandbox or network failure is reported with the manual command above; it does not remove the installed version. Running the installation command manually bypasses the daily check interval.
 
-Treat managed release files as versioned software. Keep personal defaults with `configure --global` in `~/.local/share/agent-review/config.json`, worktree preferences with `configure` overrides and custom presets outside the release directory so upgrades do not replace your preferences. The installer does not install Docker, tmux or Claude credentials. The skill checks these before review:
+Treat managed release files as versioned software. Keep personal defaults with `configure --global` in `~/.local/share/sst-agent-review/config.json`, worktree preferences with `configure` overrides and custom presets outside the release directory so upgrades do not replace your preferences. The installer does not install Docker, tmux or Claude credentials. The skill checks these before review:
 
 - Python 3.9+, Git and tmux on the host. The helpers use only Python's standard library.
 - By default, a local Linux Docker Engine, rootless or rootful without userns-remap, accessible to your user. Podman and userns-remap are not supported.
@@ -24,19 +24,19 @@ Treat managed release files as versioned software. Keep personal defaults with `
 - Native mode can be selected explicitly without Docker. It uses Claude's built-in Bash sandbox when available: Seatbelt on macOS, bubblewrap and socat on Linux. Missing sandbox support produces a warning and allows commands with your user permissions; dependencies are never installed automatically.
 - Network access to build the runtime and use Claude. The first preparation downloads a pinned, checksum-verified Claude CLI; no existing Claude executable, aliases, pip packages or compiler are needed.
 
-For an explicitly manual installation without automatic updates, copy the **whole** [local-review bundle](skills/local-review), including its presets and runtime files, into the skills directory supported by your author agent. From this repository, replace the destination below with its absolute path:
+For an explicitly manual installation without automatic updates, copy the **whole** [agent-review bundle](skills/agent-review), including its presets and runtime files, into the skills directory supported by your author agent. From this repository, replace the destination below with its absolute path:
 
 ```sh
 AGR_SKILLS_DIR=/absolute/path/to/your/agents/skills
 mkdir -p "$AGR_SKILLS_DIR"
-cp -R skills/local-review "$AGR_SKILLS_DIR/sst-local-review"
+cp -R skills/agent-review "$AGR_SKILLS_DIR/sst-agent-review"
 ```
 
-For a first installation, use a destination without an existing `sst-local-review` folder. You can also give your author agent the absolute path to [SKILL.md](skills/local-review/SKILL.md) in this checkout and ask it to follow those instructions. The helper path is relative to the installed skill, not to the repository being reviewed.
+For a first installation, use a destination without an existing `sst-agent-review` folder. You can also give your author agent the absolute path to [SKILL.md](skills/agent-review/SKILL.md) in this checkout and ask it to follow those instructions. The helper path is relative to the installed skill, not to the repository being reviewed.
 
 Then ask the author agent, for example:
 
-> Use SST Local Review for this worktree against the local main branch. The task was to reject empty input while preserving fractional averages. Run Claude Sonnet with medium effort. Use the default discussion flow: critical findings individually, then tables for medium and low priorities. Explain your recommendations and record my choices.
+> Use SST Agent Review for this worktree against the local main branch. The task was to reject empty input while preserving fractional averages. Run Claude Sonnet with medium effort. Use the default discussion flow: critical findings individually, then tables for medium and low priorities. Explain your recommendations and record my choices.
 
 Use your actual base and task description. The author follows your repository's approval rules. A request for one review does not authorize fixes, extra reviewers or repeat passes.
 
@@ -45,7 +45,7 @@ Use your actual base and task description. The author follows your repository's 
 These commands expose what the skill does. The author normally runs them for you. Replace the paths, choose an existing local base, and write a task file describing the intended change and scope. Keep that file outside the reviewed source tree.
 
 ```sh
-AGR_SKILL=/absolute/path/to/sst-local-review
+AGR_SKILL=/absolute/path/to/sst-agent-review
 AGR_REPO=/absolute/path/to/your/worktree
 AGR_TASK=/absolute/path/to/task.txt
 AGR_BASE=main
@@ -74,7 +74,7 @@ review start r01-claude1 --human
 review watch r01-claude1
 ```
 
-`start` launches the real interactive Claude CLI in tmux and sends the prompt through terminal input. The window is named `agr@repo/worktree-r01-claude1`. Your author session need not be in tmux: the helper creates a detached session and prints an attach command. `watch` reports saved stages, publication counts and terminal activity; Ctrl-C stops watching without cancelling Claude.
+`start` launches the real interactive Claude CLI in tmux and sends the prompt through terminal input. The window is named `agr@repo/worktree@r01-claude1`. Your author session need not be in tmux: the helper creates a detached session and prints an attach command. `watch` reports saved stages, publication counts and terminal activity; Ctrl-C stops watching without cancelling Claude.
 
 ## Defaults and prompt presets
 
@@ -82,8 +82,8 @@ Selection precedence, from lowest to highest:
 
 | Location | Applies to |
 | --- | --- |
-| Installed [defaults.ini](skills/local-review/defaults.ini) | All worktrees using that skill installation |
-| Personal `~/.local/share/agent-review/config.json`, edited through `configure --global` | All future preparations for this user |
+| Installed [defaults.ini](skills/agent-review/defaults.ini) | All worktrees using that skill installation |
+| Personal `~/.local/share/sst-agent-review/config.json`, edited through `configure --global` | All future preparations for this user |
 | Worktree `.agr/config.json`, edited through `configure` | Future preparations in this worktree |
 | Flags on `prepare` | That reviewer only |
 
@@ -107,13 +107,13 @@ Each preset separates reviewer and author instructions:
 
 | File | Controls |
 | --- | --- |
-| [reviewer/review.md](skills/local-review/presets/default/reviewer/review.md) | Review criteria and findings to include |
-| [reviewer/policy.md](skills/local-review/presets/default/reviewer/policy.md) | Autonomy, internet, subagents and checks |
-| [reviewer/followup.md](skills/local-review/presets/default/reviewer/followup.md) | Prior context and repeated review |
-| [author/discuss.md](skills/local-review/presets/default/author/discuss.md) | Proportional assessment, tables, group choices and revisions |
-| [author/fix.md](skills/local-review/presets/default/author/fix.md) | Fix batches, validation and optional authorized delegation |
+| [reviewer/review.md](skills/agent-review/presets/default/reviewer/review.md) | Review criteria and findings to include |
+| [reviewer/policy.md](skills/agent-review/presets/default/reviewer/policy.md) | Autonomy, internet, subagents and checks |
+| [reviewer/followup.md](skills/agent-review/presets/default/reviewer/followup.md) | Prior context and repeated review |
+| [author/discuss.md](skills/agent-review/presets/default/author/discuss.md) | Proportional assessment, tables, group choices and revisions |
+| [author/fix.md](skills/agent-review/presets/default/author/fix.md) | Fix batches, validation and optional authorized delegation |
 
-The skill adds its [file protocol](skills/local-review/prompts/reviewer/protocol.md) separately. Copy the default preset directory to customize its texts. A bare name selects presets/NAME; a custom path is relative to the reviewed worktree when not absolute. Users can also change discussion and delegation preferences in conversation without editing files. The author loads effective instructions with instructions discuss or instructions fix.
+The skill adds its [file protocol](skills/agent-review/prompts/reviewer/protocol.md) separately. Copy the default preset directory to customize its texts. A bare name selects presets/NAME; a custom path is relative to the reviewed worktree when not absolute. Users can also change discussion and delegation preferences in conversation without editing files. The author loads effective instructions with instructions discuss or instructions fix.
 
 ```sh
 review configure --preset ./review-presets/security --human
@@ -196,7 +196,7 @@ If a run fails or becomes uncertain, retain its artifacts and follow your recove
 | Pane disappeared while the round is active | After inspection and recovery approval, `recover REVIEWER` records interruption and cleans the owned runtime; it refuses a surviving worker and never restarts Claude. |
 | Terminal round has a cleanup error or orphan container | After inspection and recovery approval, `close REVIEWER` retries owned cleanup. A saved cleanup error blocks new launches. |
 
-A quiet or exited terminal is not a successful review: the reviewer must explicitly signal completion. This does not certify coverage; remaining drafts are reconciled by the author and do not block finishing. Active reviews with no terminal output or publication activity for five minutes become stalled. Startup has a separate 60-second timeout. Failed runs retain findings, drafts and logs; there is no automatic retry. Do not delete `.agr/` to repair a runtime: its ownership records are needed for safe cleanup. See the [command reference](skills/local-review/references/commands.md) for detailed lifecycle behavior.
+A quiet or exited terminal is not a successful review: the reviewer must explicitly signal completion. This does not certify coverage; remaining drafts are reconciled by the author and do not block finishing. Active reviews with no terminal output or publication activity for five minutes become stalled. Startup has a separate 60-second timeout. Failed runs retain findings, drafts and logs; there is no automatic retry. Do not delete `.agr/` to repair a runtime: its ownership records are needed for safe cleanup. See the [command reference](skills/agent-review/references/commands.md) for detailed lifecycle behavior.
 
 ## Isolation and verification limits
 
@@ -208,12 +208,12 @@ On macOS, choose `configure --no-docker --auth keychain` to use the default Clau
 
 A clean Ubuntu 24.04 VM with rootful Docker passed an interactive Sonnet/medium review, finding the planted regression and publishing results. Closing removed its owned pane and container while preserving results and source. A separate dummy-credential check verified writable credential-file persistence. **A real provider OAuth token refresh has not yet been verified.** Interactive mode and subscription authentication do not prove the provider's billing treatment.
 
-The [author instructions](skills/local-review/SKILL.md) define the interaction process. The [command reference](skills/local-review/references/commands.md) covers every command, publication details and scoped verification. Optional `export --format markdown` prepares local text for a PR; publishing it remains a separate, explicitly authorized action.
+The [author instructions](skills/agent-review/SKILL.md) define the interaction process. The [command reference](skills/agent-review/references/commands.md) covers every command, publication details and scoped verification. Optional `export --format markdown` prepares local text for a PR; publishing it remains a separate, explicitly authorized action.
 
 ## macOS smoke check
 
 After installing this version, give your author agent the worktree path and an existing local base, then ask:
 
-> Use SST Local Review in native mode with Keychain, Claude Sonnet and medium effort. Check prerequisites, then run one review against my selected base.
+> Use SST Agent Review in native mode with Keychain, Claude Sonnet and medium effort. Check prerequisites, then run one review against my selected base.
 
 Before starting, the skill should show native mode, Keychain authentication and the sandbox warning or requested protection. The first Keychain access may ask for OS approval. Confirm that the reviewer reaches its prompt without Claude login, trust or tool-permission questions; publishes findings and a report; and that `close REVIEWER` removes its owned tmux pane and temporary profile while preserving results. Check Claude `/status` for subscription authentication. Do not print credentials. This real macOS check is user-run; Linux fixtures do not establish Keychain or Seatbelt behavior.

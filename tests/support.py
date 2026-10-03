@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "skills" / "local-review" / "scripts"
+SCRIPTS = ROOT / "skills" / "agent-review" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from agr.prompts import prepare
@@ -40,7 +40,7 @@ class RepositoryTest(unittest.TestCase):
         self.repo.mkdir()
         home = Path(self.temporary.name) / 'home'
         home.mkdir()
-        self.global_config = home / '.local/share/agent-review/config.json'
+        self.global_config = home / '.local/share/sst-agent-review/config.json'
         clean = {key: value for key, value in os.environ.items() if key not in {
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
