@@ -100,7 +100,77 @@ class RuntimeTests(RepositoryTest):
         self.assertTrue(read_json(home / '.claude.json')['hasCompletedOnboarding'])
         self.assertEqual(read_json(config / '.claude.json'), read_json(home / '.claude.json'))
         args = execute.call_args.args[1]
-        self.assertEqual(args[args.index('--settings') + 1], '{"disableAllHooks":true}')
+        settings = json.loads(args[args.index('--settings') + 1])
+        self.assertTrue(settings['disableAllHooks'])
+        self.assertTrue(settings['permissions']['blockReadsOutsideWorkingDirectories'])
+        self.assertNotIn('ANTHROPIC_API_KEY', execute.call_args.args[2])
+
+    def test_native_macos_uses_default_keychain_with_a_separate_clean_profile(self):
+        record = self.prepared()
+        record = self.journal.update_round(record['id'], runtime={**record['runtime'], 'auth': 'keychain', 'keychain_account': 'fixture-user'})
+        home = self.journal.directory / 'keychain-home'
+        config = home / '.claude'
+        auth = {'authMethod': 'claude.ai', 'apiProvider': 'firstParty', 'subscriptionType': 'test-only'}
+        with patch.dict(os.environ, runtime.environment(home, self.repo), clear=True), patch('agr.runtime.checked', return_value=record['runtime']['version']), patch('agr.runner.subscription_auth', return_value=auth) as check, patch('agr.runtime.os.execve') as execute:
+            runtime.inner_review(self.journal, record['id'])
+            self.assertEqual(os.environ['CLAUDE_SECURESTORAGE_CONFIG_DIR'], '')
+            self.assertEqual(os.environ['USER'], 'fixture-user')
+        self.assertFalse((config / '.credentials.json').exists())
+        self.assertEqual(execute.call_args.args[2]['CLAUDE_CONFIG_DIR'], str(config))
+        self.assertIn('--setting-sources', check.call_args.args[0])
+        self.assertNotIn('fixture-user', (self.journal.round_directory(record['id']) / 'output/.runtime.json').read_text())
+
+    def test_native_macos_keychain_is_auto_selected_but_never_for_docker(self):
+        with patch('agr.runtime.platform.system', return_value='Darwin'):
+            for values, expected in (({'runtime': 'native'}, 'keychain'), ({}, 'file'), ({'runtime': 'native', 'credentials_file': '/explicit/credentials'}, 'file')):
+                with self.subTest(values=values):
+                    self.assertEqual(runtime.auth_source(runtime.configuration(self.repo, values)), expected)
+            with self.assertRaisesRegex(ReviewError, 'requires native macOS'):
+                runtime.configuration(self.repo, {'runtime': 'docker', 'auth': 'keychain'})
+        with patch('agr.runtime.platform.system', return_value='Linux'):
+            with self.assertRaisesRegex(ReviewError, 'requires native macOS'):
+                runtime.configuration(self.repo, {'runtime': 'native', 'auth': 'keychain'})
+
+    def test_keychain_preflight_reads_metadata_without_exporting_tokens(self):
+        settings = {'runtime': 'native', 'auth': 'keychain'}
+        with patch('agr.runtime.keychain_account', return_value='fixture-user'), patch('agr.runtime.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as invoke:
+            self.assertIn('Keychain', runtime.check_credentials(settings))
+        args = invoke.call_args.args[0]
+        self.assertEqual(args[0], '/usr/bin/security')
+        self.assertNotIn('-w', args)
+        self.assertNotIn('-g', args)
+        with patch('agr.runtime.subprocess.run', return_value=subprocess.CompletedProcess([], 44)):
+            with self.assertRaisesRegex(ReviewError, 'Keychain'):
+                runtime.check_credentials(settings)
+
+    def test_native_sandbox_and_fallback_do_not_install_dependencies(self):
+        with patch('agr.runtime.platform.system', return_value='Linux'), patch('agr.runtime.shutil.which', side_effect=lambda name, **kw: '/usr/bin/' + name if name == 'bwrap' else None):
+            sandbox = runtime.native_sandbox()
+        self.assertFalse(sandbox['enabled'])
+        self.assertIn('socat', sandbox['message'])
+        with patch('agr.runtime.platform.system', return_value='Darwin'), patch('agr.runtime.shutil.which', return_value='/usr/bin/sandbox-exec') as lookup:
+            self.assertTrue(runtime.native_sandbox()['enabled'])
+            self.assertIn('/opt/homebrew/bin', lookup.call_args.kwargs['path'])
+
+    def test_native_settings_allow_research_without_permission_prompts(self):
+        settings = runtime.claude_settings({'mode': 'native', 'sandbox': {'enabled': True}, 'read_directories': ['/skill', '/git']})
+        self.assertEqual(settings['permissions']['additionalDirectories'], ['/skill', '/git'])
+        self.assertTrue(settings['permissions']['blockReadsOutsideWorkingDirectories'])
+        self.assertTrue(settings['sandbox']['enabled'])
+        self.assertTrue(settings['sandbox']['autoAllowBashIfSandboxed'])
+        self.assertFalse(settings['sandbox']['failIfUnavailable'])
+        self.assertFalse(settings['sandbox']['allowUnsandboxedCommands'])
+        self.assertEqual(settings['sandbox']['network']['allowedDomains'], ['*'])
+        self.assertNotIn('allow', settings['permissions'])
+        self.assertEqual(runtime.claude_settings({'mode': 'docker'}), {'disableAllHooks': True})
+
+    def test_macos_environment_uses_system_and_homebrew_tools_without_host_profile(self):
+        with patch('agr.runtime.platform.system', return_value='Darwin'), patch.dict(os.environ, {'PATH': '/user/wrappers', 'CLAUDE_SECURESTORAGE_CONFIG_DIR': '/user/profile'}):
+            environment = runtime.environment('/fresh', self.repo)
+        self.assertIn('/opt/homebrew/bin', environment['PATH'])
+        self.assertNotIn('/user/wrappers', environment['PATH'])
+        self.assertNotIn('CLAUDE_SECURESTORAGE_CONFIG_DIR', environment)
+        self.assertEqual(environment['LANG'], 'en_US.UTF-8')
 
     def test_clean_environment_does_not_inherit_host_configuration(self):
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "host-key", "CLAUDE_CONFIG_DIR": "/host", "BASH_ENV": "/host.sh", "PYTHONPATH": "/host/python"}):

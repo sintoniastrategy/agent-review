@@ -1,4 +1,4 @@
-# Local review skill
+# SST Local Review
 
 Review code locally with a separate interactive Claude session while keeping implementation and discussion in your existing author agent. The author discusses critical findings individually, presents medium and low priorities in tables with recommendations, records revisable decisions, and fixes the selected items in suitable batches. The skill explains each stage and recommends a default next step; users can change the flow in conversation. You decide when to request another pass or stop.
 
@@ -12,15 +12,16 @@ On Linux or macOS, install or update with one command:
 curl -fsSL https://github.com/sintoniastrategy/agent-review/releases/latest/download/install.sh | bash
 ```
 
-The installer needs `curl` and Python 3.9+. It downloads the latest stable release, verifies the archive's SHA-256, and stores it under `~/.local/share/agent-review/releases/VERSION`. The `current` symlink selects the installed version. Skill symlinks are created in `~/.agents/skills/local-review` for [Codex](https://developers.openai.com/codex/skills/) and `~/.claude/skills/local-review` for [Claude Code](https://code.claude.com/docs/en/skills). An existing unrelated skill is left untouched and reported. Start a new author-agent session after the first installation and ask it to use local-review.
+The installer needs `curl` and Python 3.9+. It downloads the latest stable release, verifies the archive's SHA-256, and stores it under `~/.local/share/agent-review/releases/VERSION`. The `current` symlink selects the installed version. Skill symlinks are created in `~/.agents/skills/sst-local-review` for [Codex](https://developers.openai.com/codex/skills/) and `~/.claude/skills/sst-local-review` for [Claude Code](https://code.claude.com/docs/en/skills). An existing unrelated skill is left untouched and reported. Start a new author-agent session after the first installation and ask it to use SST Local Review (`sst-local-review`). Old installer-owned local-review links are migrated; unrelated skills are preserved. The internal archive directory stays `local-review` so existing updaters can read new releases.
 
 At skill entry, the author checks for updates at most once per 24 hours. After a successful update it reads the new instructions and pins the concrete version path for the invocation. Already running author workflows and reviewers keep their previous version; installed versions are retained. There is no system service, timer, API token or `gh` requirement. A sandbox or network failure is reported with the manual command above; it does not remove the installed version. Running the installation command manually bypasses the daily check interval.
 
-Treat managed release files as versioned software. Keep personal settings in worktree `configure` overrides and custom presets outside the release directory so upgrades do not replace your preferences. The installer does not install Docker, tmux or Claude credentials. The skill checks these before review:
+Treat managed release files as versioned software. Keep personal defaults with `configure --global` in `~/.local/share/agent-review/config.json`, worktree preferences with `configure` overrides and custom presets outside the release directory so upgrades do not replace your preferences. The installer does not install Docker, tmux or Claude credentials. The skill checks these before review:
 
 - Python 3.9+, Git and tmux on the host. The helpers use only Python's standard library.
-- A local Linux Docker Engine, rootless or rootful without userns-remap, accessible to your user. Podman and userns-remap are not supported.
-- A Claude subscription credentials file, normally `~/.claude/.credentials.json`. Supply an existing authenticated file; the helper does not perform an interactive login.
+- By default, a local Linux Docker Engine, rootless or rootful without userns-remap, accessible to your user. Podman and userns-remap are not supported.
+- Claude subscription authentication: native macOS uses the default Claude Code login in Keychain. Docker and native Linux use an existing credentials file, normally `~/.claude/.credentials.json`. The helper does not perform an interactive login. Docker has no Keychain bridge.
+- Native mode can be selected explicitly without Docker. It uses Claude's built-in Bash sandbox when available: Seatbelt on macOS, bubblewrap and socat on Linux. Missing sandbox support produces a warning and allows commands with your user permissions; dependencies are never installed automatically.
 - Network access to build the runtime and use Claude. The first preparation downloads a pinned, checksum-verified Claude CLI; no existing Claude executable, aliases, pip packages or compiler are needed.
 
 For an explicitly manual installation without automatic updates, copy the **whole** [local-review bundle](skills/local-review), including its presets and runtime files, into the skills directory supported by your author agent. From this repository, replace the destination below with its absolute path:
@@ -28,14 +29,14 @@ For an explicitly manual installation without automatic updates, copy the **whol
 ```sh
 AGR_SKILLS_DIR=/absolute/path/to/your/agents/skills
 mkdir -p "$AGR_SKILLS_DIR"
-cp -R skills/local-review "$AGR_SKILLS_DIR/local-review"
+cp -R skills/local-review "$AGR_SKILLS_DIR/sst-local-review"
 ```
 
-For a first installation, use a destination without an existing `local-review` folder. You can also give your author agent the absolute path to [SKILL.md](skills/local-review/SKILL.md) in this checkout and ask it to follow those instructions. The helper path is relative to the installed skill, not to the repository being reviewed.
+For a first installation, use a destination without an existing `sst-local-review` folder. You can also give your author agent the absolute path to [SKILL.md](skills/local-review/SKILL.md) in this checkout and ask it to follow those instructions. The helper path is relative to the installed skill, not to the repository being reviewed.
 
 Then ask the author agent, for example:
 
-> Use local-review for this worktree against the local main branch. The task was to reject empty input while preserving fractional averages. Run Claude Sonnet with medium effort. Use the default discussion flow: critical findings individually, then tables for medium and low priorities. Explain your recommendations and record my choices.
+> Use SST Local Review for this worktree against the local main branch. The task was to reject empty input while preserving fractional averages. Run Claude Sonnet with medium effort. Use the default discussion flow: critical findings individually, then tables for medium and low priorities. Explain your recommendations and record my choices.
 
 Use your actual base and task description. The author follows your repository's approval rules. A request for one review does not authorize fixes, extra reviewers or repeat passes.
 
@@ -44,7 +45,7 @@ Use your actual base and task description. The author follows your repository's 
 These commands expose what the skill does. The author normally runs them for you. Replace the paths, choose an existing local base, and write a task file describing the intended change and scope. Keep that file outside the reviewed source tree.
 
 ```sh
-AGR_SKILL=/absolute/path/to/local-review
+AGR_SKILL=/absolute/path/to/sst-local-review
 AGR_REPO=/absolute/path/to/your/worktree
 AGR_TASK=/absolute/path/to/task.txt
 AGR_BASE=main
@@ -82,12 +83,13 @@ Selection precedence, from lowest to highest:
 | Location | Applies to |
 | --- | --- |
 | Installed [defaults.ini](skills/local-review/defaults.ini) | All worktrees using that skill installation |
+| Personal `~/.local/share/agent-review/config.json`, edited through `configure --global` | All future preparations for this user |
 | Worktree `.agr/config.json`, edited through `configure` | Future preparations in this worktree |
 | Flags on `prepare` | That reviewer only |
 
 The shipped defaults are `agent = claude`, `model = opus`, `effort = xhigh`, `preset = default`, `scope = full`. `opus` selects the latest Opus alias; use a full model name to request a specific version. Supported efforts are `low`, `medium`, `high`, `xhigh`, and `max`.
 
-Set persistent worktree overrides:
+Set personal defaults, including runtime, with `configure --global`. This also works outside a Git repository and survives skill updates. For example, `review configure --global --model sonnet --effort medium`. Omit `--global` to set worktree overrides:
 
 ```sh
 review configure --model sonnet --effort medium --human
@@ -99,7 +101,7 @@ Or choose settings for one new preparation:
 review prepare --model sonnet --effort medium --preset default --human
 ```
 
-Inspect settings with `configure --human`; restore inherited model and effort with `configure --reset model --reset effort`. Unspecified fields stay unchanged. Editing defaults or overrides does not change already prepared rounds.
+Inspect settings with `configure --human`; restore inherited model and effort with `configure --reset model --reset effort`. Unspecified fields stay unchanged. Add `--global` to inspect or reset personal defaults. Worktree settings override personal defaults; resets remove only the selected layer's override. Editing defaults or overrides does not change already prepared rounds.
 
 Each preset separates reviewer and author instructions:
 
@@ -200,8 +202,18 @@ A quiet or exited terminal is not a successful review: the reviewer must explici
 
 Docker gives Claude a fresh home and the helper's own pinned binary. Source, Git metadata and author decisions are mounted read-only; its output and the single credentials file are writable. User wrappers, settings, hooks and automatic MCP loading are disabled. Claude uses `bypassPermissions`; tools for human questions and plan approval are excluded. Network access remains enabled for focused documentation checks. This is not an internet or credential-exfiltration sandbox.
 
-`configure --no-docker` is available for an explicitly chosen, already isolated environment such as CI. It still uses a managed binary and clean home, but provides no filesystem sandbox. Docker Desktop and a full macOS review have not been validated. Docker connection settings are fixed at preparation so launch and cleanup use the same endpoint.
+`configure --no-docker` selects a managed native binary with a fresh temporary home and configuration. It does not load your Claude settings, hooks, MCP configuration or shell wrappers. Normal research tools and Bash are allowed. Claude's built-in Bash sandbox is requested when its prerequisites exist; missing support or initialization failure warns and continues unsandboxed. File-tool reads are restricted to the worktree and helper/Git directories. Native mode is not whole-process or read-only isolation: it may write source, and unsandboxed commands have your user permissions. Docker connection settings are fixed at preparation so launch and cleanup use the same endpoint.
+
+On macOS, choose `configure --no-docker --auth keychain` to use the default Claude Code Keychain login independently of the clean profile. OAuth refresh is handled by Claude directly in that store; the helper does not export Keychain tokens. First access may trigger a macOS Keychain approval. `--auth auto` selects Keychain for native macOS unless a credentials file is explicitly configured, and a file for other runtimes. `--auth file --credentials-file PATH` explicitly selects a file. Custom Keychain profiles are not discovered. Docker Desktop and a full macOS review, including actual Keychain access and Seatbelt enforcement, still require validation on a Mac.
 
 A clean Ubuntu 24.04 VM with rootful Docker passed an interactive Sonnet/medium review, finding the planted regression and publishing results. Closing removed its owned pane and container while preserving results and source. A separate dummy-credential check verified writable credential-file persistence. **A real provider OAuth token refresh has not yet been verified.** Interactive mode and subscription authentication do not prove the provider's billing treatment.
 
 The [author instructions](skills/local-review/SKILL.md) define the interaction process. The [command reference](skills/local-review/references/commands.md) covers every command, publication details and scoped verification. Optional `export --format markdown` prepares local text for a PR; publishing it remains a separate, explicitly authorized action.
+
+## macOS smoke check
+
+After installing this version, give your author agent the worktree path and an existing local base, then ask:
+
+> Use SST Local Review in native mode with Keychain, Claude Sonnet and medium effort. Check prerequisites, then run one review against my selected base.
+
+Before starting, the skill should show native mode, Keychain authentication and the sandbox warning or requested protection. The first Keychain access may ask for OS approval. Confirm that the reviewer reaches its prompt without Claude login, trust or tool-permission questions; publishes findings and a report; and that `close REVIEWER` removes its owned tmux pane and temporary profile while preserving results. Check Claude `/status` for subscription authentication. Do not print credentials. This real macOS check is user-run; Linux fixtures do not establish Keychain or Seatbelt behavior.

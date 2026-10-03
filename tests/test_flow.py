@@ -139,7 +139,7 @@ class FlowTests(RepositoryTest):
     def test_preflight_checks_prerequisites_without_installing_or_launching(self):
         managed = self.fake_runtime()
         self.command('configure', '--no-docker', '--credentials-file', managed['credentials_file'])
-        with patch('agr.cli.shutil.which', side_effect=lambda name: '/tools/' + name), patch('agr.cli.runtime.setup') as setup:
+        with patch('agr.cli.shutil.which', side_effect=lambda name, **kwargs: '/tools/' + name), patch('agr.cli.runtime.setup') as setup:
             result = self.command('preflight', '--base', 'base')
             self.assertEqual(result['scope'], 'full')
             self.assertEqual(result['tools'], {'git': '/tools/git', 'tmux': '/tools/tmux'})

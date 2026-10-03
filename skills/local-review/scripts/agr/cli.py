@@ -25,10 +25,12 @@ def parser():
     commands = result.add_subparsers(dest="command", required=True)
     config = commands.add_parser("configure")
     config.add_argument('--human', action='store_true')
+    config.add_argument('--global', dest='global_config', action='store_true', help='Set personal defaults outside versioned releases; no Git repository required')
     mode = config.add_mutually_exclusive_group()
     mode.add_argument('--docker', dest='runtime', action='store_const', const='docker')
     mode.add_argument('--no-docker', dest='runtime', action='store_const', const='native')
     config.add_argument("--credentials-file", type=Path)
+    config.add_argument('--auth', choices=('auto', 'file', 'keychain'))
     config.add_argument("--window-name")
     config.add_argument('--reset', action='append', choices=configuration.REVIEW_KEYS + configuration.RUNTIME_KEYS, default=[])
     commands.add_parser("setup")
@@ -180,7 +182,8 @@ def markdown(data, selected):
 
 
 def execute(args):
-    repo = root(args.repo)
+    global_config = args.command == 'configure' and args.global_config
+    repo = Path(args.repo).expanduser().resolve() if global_config else root(args.repo)
     if args.command == 'instructions':
         return configuration.load_review(repo)[args.phase + '_prompt']
     if args.command == 'preflight':
@@ -191,8 +194,7 @@ def execute(args):
         missing = [name for name, path in paths.items() if path is None]
         if missing:
             raise ReviewError('Missing required tools: ' + ', '.join(missing))
-        if not Path(settings['credentials_file']).is_file():
-            raise ReviewError('Credentials file is missing: ' + settings['credentials_file'])
+        auth = runtime.check_credentials(settings)
         base = args.base
         session = repo / '.agr/session.json'
         if base is None and session.is_file():
@@ -206,27 +208,33 @@ def execute(args):
         result = {'tools': paths, 'base': base, 'base_commit': base_commit, 'head': head, 'merge_base': merge_base, 'runtime': settings['runtime'], **{key: selected[key] for key in configuration.REVIEW_KEYS}}
         if settings['runtime'] == 'docker':
             result.update(runtime.docker_identity())
-        result['auth'] = 'credentials file present; subscription checked by managed Claude before launch'
+        else:
+            result['sandbox'] = runtime.native_sandbox()['message']
+        result['auth'] = auth
         return '\n'.join(key + ': ' + str(value) for key, value in result.items()) if args.human else result
     if args.command == "configure":
-        destination = local_directory(repo) / "config.json"
+        destination = configuration.global_path() if global_config else local_directory(repo) / "config.json"
+        destination.parent.mkdir(parents=True, exist_ok=True)
         updates = {key: getattr(args, key) for key in configuration.REVIEW_KEYS + configuration.RUNTIME_KEYS if getattr(args, key) is not None}
         if set(args.reset) & set(updates):
             raise ReviewError('Cannot set and reset the same configuration field')
         with locked(destination.parent / '.lock'):
-            values = configuration.local(repo)
+            values = configuration.global_settings() if global_config else configuration.local(repo)
             for key in args.reset:
                 values.pop(key, None)
             values.update(updates)
-            settings = runtime.configuration(repo, values)
-            selected = configuration.load_review(repo, values=values)
+            settings = runtime.configuration(repo, {} if global_config else values, values if global_config else None)
+            selected = configuration.load_review(repo, values={} if global_config else values, global_values=values if global_config else None)
             settings.update({key: selected[key] for key in configuration.REVIEW_KEYS})
-            values = {key: settings[key] for key in values}
+            values = {key: value if key == 'auth' else settings[key] for key, value in values.items()}
             if updates or args.reset:
                 write_json(destination, values)
-        result = {'config': str(destination), **settings, 'overrides': values}
+        result = {'config': str(destination), **settings, 'overrides': values, 'global_config': str(configuration.global_path())}
         if args.human:
-            return '\n'.join(['Effective configuration:'] + [key + ': ' + str(value) for key, value in settings.items()] + ['Worktree overrides: ' + (', '.join(values) or 'none')])
+            return '\n'.join(['Effective configuration:'] + [key + ': ' + str(value) for key, value in settings.items()] + [
+                ('Global' if global_config else 'Worktree') + ' overrides: ' + (', '.join(values) or 'none'),
+                'Configuration: ' + str(destination), 'Global configuration: ' + str(configuration.global_path()),
+            ] + ([runtime.native_sandbox()['message']] if settings['runtime'] == 'native' else []))
         return result
     if args.command == "setup":
         return runtime.setup(repo, runtime.configuration(repo))

@@ -180,14 +180,14 @@ class InstallTests(unittest.TestCase):
         self.assertEqual((self.root / 'current/local-review').resolve(), original)
 
     def test_foreign_skill_is_not_overwritten_and_other_link_is_not_created(self):
-        existing = self.home / '.claude/skills/local-review'
+        existing = self.home / '.claude/skills/sst-local-review'
         existing.mkdir(parents=True)
         (existing / 'SKILL.md').write_text('my existing skill')
         status, output = self.invoke('--home', str(self.home))
         self.assertEqual(status, 1)
         self.assertIn(str(existing), output)
         self.assertEqual((existing / 'SKILL.md').read_text(), 'my existing skill')
-        self.assertFalse((self.home / '.agents/skills/local-review').is_symlink())
+        self.assertFalse((self.home / '.agents/skills/sst-local-review').is_symlink())
         self.assertFalse((self.root / 'current').is_symlink())
         self.assertEqual(self.urls, [])
 
@@ -209,8 +209,43 @@ class InstallTests(unittest.TestCase):
     def test_macos_install_uses_the_same_layout(self):
         with patch.object(installer.platform, 'system', return_value='Darwin'):
             self.install()
-        self.assertTrue((self.home / '.agents/skills/local-review/SKILL.md').is_file())
-        self.assertTrue((self.home / '.claude/skills/local-review/SKILL.md').is_file())
+        self.assertTrue((self.home / '.agents/skills/sst-local-review/SKILL.md').is_file())
+        self.assertTrue((self.home / '.claude/skills/sst-local-review/SKILL.md').is_file())
+
+    def test_owned_legacy_links_migrate_even_during_daily_check_cooldown(self):
+        skill = self.install()
+        for link in installer.skill_links(self.home):
+            link.rename(link.with_name('local-review'))
+        self.urls.clear()
+        status, output = self.invoke('--check', script=self.installed_script())
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.urls, [])
+        for link in installer.skill_links(self.home):
+            self.assertEqual(link.resolve(), skill.resolve())
+            self.assertFalse(link.with_name('local-review').exists())
+
+    def test_links_only_supports_upgrade_through_the_previous_installer(self):
+        skill = self.install()
+        for link in installer.skill_links(self.home):
+            link.rename(link.with_name('local-review'))
+        self.urls.clear()
+        status, output = self.invoke('--links-only', script=self.installed_script())
+        self.assertEqual(status, 0, output)
+        self.assertEqual(self.urls, [])
+        self.assertEqual(installer.skill_links(self.home)[0].resolve(), skill.resolve())
+
+    def test_foreign_old_skill_and_global_preferences_survive_install_and_update(self):
+        old = self.home / '.agents/skills/local-review'
+        old.mkdir(parents=True)
+        (old / 'SKILL.md').write_text('Unrelated skill')
+        self.root.mkdir(parents=True)
+        config = self.root / 'config.json'
+        config.write_text('{"model":"sonnet"}\n')
+        self.install()
+        self.release('v0.1.1')
+        self.install()
+        self.assertEqual((old / 'SKILL.md').read_text(), 'Unrelated skill')
+        self.assertEqual(config.read_text(), '{"model":"sonnet"}\n')
 
     def test_release_assets_are_reproducible_and_contain_only_the_skill(self):
         first = builder.build(ROOT, 'v0.1.0', self.directory / 'first')

@@ -78,6 +78,10 @@ def summary(value):
     lines = ['%s | %s | findings: %d | rechecks: %d | report: %s' % (label, phase, value['findings'], value['checks'], 'saved' if value['report'] else 'pending')]
     lines.append('Model: %s | effort: %s | preset: %s' % tuple(clean(record.get(key) or 'not recorded') for key in ('model', 'effort', 'preset')))
     lines.append('Scope: ' + record.get('scope', 'not recorded'))
+    managed = record.get('runtime', {})
+    if managed.get('mode') == 'native':
+        lines.append('Runtime: native | authentication: ' + managed.get('auth', 'file'))
+        lines.append(managed.get('sandbox', {}).get('message', 'Native mode has no recorded Bash sandbox; commands may run with your user permissions.'))
     if value['message']:
         lines.append('Reviewer last update (' + age(value['updated']) + '): ' + value['message'])
     else:

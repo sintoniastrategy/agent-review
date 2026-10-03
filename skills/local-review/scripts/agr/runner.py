@@ -36,7 +36,7 @@ def claude_command(record, directory):
     args = [record['runtime']['executable'],
         '--session-id', record['session_id'],
         '--permission-mode', 'bypassPermissions', '--setting-sources', '',
-        '--settings', '{"disableAllHooks":true}', '--strict-mcp-config',
+        '--settings', json.dumps(runtime.claude_settings(record['runtime']), separators=(',', ':')), '--strict-mcp-config',
         '--disallowedTools', 'AskUserQuestion,EnterPlanMode,ExitPlanMode',
     ]
     if record.get('model'):
@@ -164,6 +164,8 @@ def worker(directory, number):
             cache.mkdir(exist_ok=True)
             home = tempfile.mkdtemp(prefix='runtime-', dir=cache)
             environment = runtime.environment(home, journal.manifest['repo'])
+            sandbox = record['runtime'].get('sandbox') or {'message': 'Native mode has no recorded Bash sandbox; commands may run with your user permissions.'}
+            print(sandbox['message'], flush=True)
             args = [sys.executable, str(runtime.ENTRY), '_review', str(journal.directory), str(number)]
         write_json(output / 'launch.json', {'process': args, 'claude': claude_command(record, output)})
         process = subprocess.Popen(args, cwd=journal.manifest['repo'], env=environment)

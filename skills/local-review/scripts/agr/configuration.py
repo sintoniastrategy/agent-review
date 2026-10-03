@@ -7,7 +7,7 @@ from . import ReviewError, read_json
 
 SKILL = Path(__file__).resolve().parents[2]
 REVIEW_KEYS = ('agent', 'model', 'effort', 'preset', 'scope')
-RUNTIME_KEYS = ('runtime', 'credentials_file', 'window_name')
+RUNTIME_KEYS = ('runtime', 'auth', 'credentials_file', 'window_name')
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 SCOPES = ('full', 'changes')
 PROMPT_FILES = {
@@ -25,6 +25,21 @@ def local(repo, values=None):
     return dict(values)
 
 
+def global_path():
+    return Path.home() / '.local/share/agent-review/config.json'
+
+
+def global_settings(values=None):
+    if values is None:
+        path = global_path()
+        values = read_json(path) if path.is_file() else {}
+    return local(None, values)
+
+
+def effective(repo, values=None, global_values=None):
+    return {**global_settings(global_values), **local(repo, values)}
+
+
 def defaults():
     path = SKILL / 'defaults.ini'
     parser = configparser.ConfigParser(interpolation=None)
@@ -38,9 +53,9 @@ def defaults():
     return dict(parser['review'])
 
 
-def load_review(repo, overrides=None, values=None):
+def load_review(repo, overrides=None, values=None, global_values=None):
     settings = defaults()
-    settings.update({key: value for key, value in local(repo, values).items() if key in REVIEW_KEYS})
+    settings.update({key: value for key, value in effective(repo, values, global_values).items() if key in REVIEW_KEYS})
     settings.update({key: value for key, value in (overrides or {}).items() if value is not None})
     for key in REVIEW_KEYS:
         value = settings[key]

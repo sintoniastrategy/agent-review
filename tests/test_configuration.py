@@ -167,3 +167,48 @@ class ConfigurationTests(RepositoryTest):
         self.journal.update_round(record['id'], model=None, effort=None, preset=None)
         text = progress.describe(self.journal, record['id'])
         self.assertIn('Model: not recorded | effort: not recorded | preset: not recorded', text)
+
+    def test_global_defaults_worktree_and_prepare_precedence(self):
+        global_result = self.command('configure', '--global', '--model', 'sonnet', '--effort', 'medium', '--no-docker')
+        self.assertEqual(global_result['config'], str(self.global_config))
+        self.assertEqual(self.command('configure')['model'], 'sonnet')
+        self.assertEqual(self.command('configure')['runtime'], 'native')
+        self.command('configure', '--effort', 'high')
+        with patch('agr.cli.runtime.setup', return_value=self.fake_runtime()):
+            record = self.command('prepare', '--model', 'opus')
+        self.assertEqual((record['model'], record['effort']), ('opus', 'high'))
+        self.assertEqual(self.command('configure', '--global')['effort'], 'medium')
+        self.assertEqual(self.command('configure', '--reset', 'effort')['effort'], 'medium')
+        self.assertEqual(read_json(self.repo / '.agr/config.json'), {})
+        self.command('configure', '--global', '--reset', 'effort')
+        self.assertEqual(self.command('configure')['effort'], 'xhigh')
+
+    def test_global_configuration_does_not_require_a_git_repository(self):
+        outside = Path(self.temporary.name) / 'outside'
+        outside.mkdir()
+        result = execute(parser().parse_args(['--repo', str(outside), 'configure', '--global', '--model', 'sonnet']))
+        self.assertEqual(result['model'], 'sonnet')
+        self.assertFalse((outside / '.agr').exists())
+
+    def test_global_custom_preset_is_saved_as_absolute_and_survives_other_worktrees(self):
+        self.preset(self.repo / 'custom')
+        self.command('configure', '--global', '--preset', './custom')
+        self.assertEqual(read_json(self.global_config)['preset'], str(self.repo / 'custom'))
+        self.assertEqual(configuration.load_review(Path(self.temporary.name))['preset'], str(self.repo / 'custom'))
+
+    def test_invalid_global_change_preserves_both_layers(self):
+        self.command('configure', '--global', '--model', 'sonnet')
+        self.command('configure', '--effort', 'low')
+        original = self.global_config.read_bytes()
+        with self.assertRaises(ReviewError):
+            self.command('configure', '--global', '--preset', 'missing')
+        self.assertEqual(self.global_config.read_bytes(), original)
+        self.assertEqual(self.command('configure')['effort'], 'low')
+
+    def test_auto_auth_remains_inherited_after_removing_explicit_file(self):
+        with patch('agr.runtime.platform.system', return_value='Darwin'):
+            self.command('configure', '--no-docker', '--auth', 'auto', '--credentials-file', '/fixture/credentials.json')
+            self.assertEqual(read_json(self.repo / '.agr/config.json')['auth'], 'auto')
+            self.assertEqual(self.command('configure')['auth'], 'file')
+            self.assertEqual(self.command('configure', '--reset', 'credentials_file')['auth'], 'keychain')
+            self.assertEqual(self.command('configure', '--docker')['auth'], 'file')

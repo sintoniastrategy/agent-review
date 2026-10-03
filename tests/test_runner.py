@@ -141,7 +141,9 @@ class RunnerTests(TmuxTest):
         self.assertIn('--strict-mcp-config', args)
         self.assertEqual(args[args.index('--permission-mode') + 1], 'bypassPermissions')
         self.assertEqual(args[args.index('--setting-sources') + 1], '')
-        self.assertEqual(json.loads(args[args.index('--settings') + 1]), {'disableAllHooks': True})
+        settings = json.loads(args[args.index('--settings') + 1])
+        self.assertTrue(settings['disableAllHooks'])
+        self.assertTrue(settings['permissions']['blockReadsOutsideWorkingDirectories'])
 
     def test_terminal_progress_keeps_slow_generation_alive(self):
         record = self.execute_worker('partial', idle_timeout=0.5)

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import pwd
 import re
 import shutil
 import subprocess
@@ -70,16 +71,70 @@ def install_binary(destination):
     return destination
 
 
-def configuration(repo, values=None):
-    values = review_config.local(repo, values)
+def configuration(repo, values=None, global_values=None):
+    values = review_config.effective(repo, values, global_values)
     mode = values.get("runtime", "docker")
     if mode not in {"docker", "native"}:
         raise ReviewError("Runtime must be docker or native")
     credentials = Path(values.get("credentials_file", str(Path.home() / ".claude" / ".credentials.json"))).expanduser().resolve()
+    auth = values.get('auth', 'auto')
+    if auth not in {'auto', 'file', 'keychain'}:
+        raise ReviewError('Auth must be auto, file or keychain')
+    if auth == 'keychain' and (platform.system() != 'Darwin' or mode != 'native'):
+        raise ReviewError('Keychain authentication requires native macOS; use --no-docker or --auth file with --credentials-file')
     name = values.get("window_name")
     if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(character) < 33 or ord(character) > 126 for character in name)):
         raise ReviewError("Window name must contain 1 to 80 ASCII characters without whitespace")
-    return {"runtime": mode, "credentials_file": str(credentials), "window_name": name}
+    if auth == 'auto':
+        auth = 'keychain' if platform.system() == 'Darwin' and mode == 'native' and 'credentials_file' not in values else 'file'
+    return {"runtime": mode, 'auth': auth, "credentials_file": str(credentials), "window_name": name}
+
+
+def auth_source(settings):
+    selected = settings.get('auth', 'auto')
+    if selected == 'auto':
+        selected = 'keychain' if platform.system() == 'Darwin' and settings['runtime'] == 'native' else 'file'
+    return selected
+
+
+def keychain_account():
+    account = pwd.getpwuid(os.getuid()).pw_name
+    return account if re.fullmatch(r'[a-zA-Z0-9._-]+', account) else 'claude-code-user'
+
+
+def check_credentials(settings):
+    if auth_source(settings) == 'keychain':
+        result = subprocess.run(['/usr/bin/security', 'find-generic-password', '-a', keychain_account(), '-s', 'Claude Code-credentials'],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+        if result.returncode:
+            raise ReviewError('Claude subscription login was not found in the macOS Keychain; sign in to Claude Code with its default profile first')
+        return 'macOS Keychain entry present; subscription checked by managed Claude before launch'
+    if not Path(settings['credentials_file']).is_file():
+        raise ReviewError('Supply a subscription credentials file with configure --credentials-file: ' + settings['credentials_file'] + '; native macOS can use Keychain with configure --no-docker --auth keychain')
+    return 'credentials file present; subscription checked by managed Claude before launch'
+
+
+def native_path():
+    return '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' if platform.system() == 'Darwin' else os.defpath
+
+
+def native_sandbox():
+    required = ('sandbox-exec',) if platform.system() == 'Darwin' else ('bwrap', 'socat')
+    missing = [name for name in required if not shutil.which(name, path=native_path())]
+    if missing:
+        return {'enabled': False, 'message': 'WARNING: native mode has no Bash sandbox; missing ' + ', '.join(missing) + '. Commands run with your user permissions.'}
+    return {'enabled': True, 'message': 'Native mode requests Claude built-in Bash sandbox; Claude warns and continues unsandboxed if it cannot start. This is not whole-process isolation.'}
+
+
+def claude_settings(managed):
+    settings = {'disableAllHooks': True}
+    if managed['mode'] == 'native':
+        settings['permissions'] = {'blockReadsOutsideWorkingDirectories': True,
+                                   'additionalDirectories': managed.get('read_directories', [])}
+        settings['sandbox'] = {'enabled': managed.get('sandbox', {}).get('enabled', False),
+                               'failIfUnavailable': False, 'autoAllowBashIfSandboxed': True,
+                               'allowUnsandboxedCommands': False, 'network': {'allowedDomains': ['*']}}
+    return settings
 
 
 def checked(args, **kwargs):
@@ -104,7 +159,7 @@ def docker_connection():
     if not executable:
         if shutil.which('podman'):
             raise ReviewError('Podman is not supported yet; use Docker Engine without userns-remap')
-        raise ReviewError('Docker is required; configure --no-docker explicitly for an isolated CI environment')
+        raise ReviewError('Docker is required by default; select configure --no-docker explicitly to use native mode with weaker isolation')
     executable = str(Path(executable).absolute())
     keys = ('HOME', 'PATH', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
             'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH',
@@ -176,13 +231,16 @@ def docker_identity(client=None):
 
 
 def setup(repo, settings):
-    credentials = Path(settings["credentials_file"])
-    if not credentials.is_file():
-        raise ReviewError("Supply a subscription credentials file with configure --credentials-file: " + str(credentials))
-    record = {"mode": settings["runtime"], "version": RELEASE["version"], "credentials_file": str(credentials), "window_name": settings["window_name"]}
+    check_credentials(settings)
+    record = {"mode": settings["runtime"], "version": RELEASE["version"], 'auth': auth_source(settings), "credentials_file": settings['credentials_file'], "window_name": settings["window_name"]}
     if record["mode"] == "native":
         binary = install_binary(local_directory(repo) / ".cache" / "runtime" / RELEASE["version"] / platform_name() / "claude")
         record.update(executable=str(binary), sha256=digest(binary), python=sys.executable, entry=str(ENTRY))
+        common = git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir').decode().strip()
+        record.update(sandbox=native_sandbox(), read_directories=[str(SKILL), common])
+        if record['auth'] == 'keychain':
+            record['keychain_account'] = keychain_account()
+        print(record['sandbox']['message'], file=sys.stderr, flush=True)
         return record
     client = docker_connection()
     identity = docker_identity(client)
@@ -201,8 +259,9 @@ def setup(repo, settings):
 def environment(home, repo, container=False):
     home = str(home)
     return {
-        "HOME": home, "CLAUDE_CONFIG_DIR": home + "/.claude", "PATH": "/usr/local/bin:/usr/bin:/bin" if container else os.defpath,
-        "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
+        "HOME": home, "CLAUDE_CONFIG_DIR": home + "/.claude", "PATH": "/usr/local/bin:/usr/bin:/bin" if container else native_path(),
+        "LANG": "en_US.UTF-8" if not container and platform.system() == 'Darwin' else "C.UTF-8",
+        "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
         "DISABLE_AUTOUPDATER": "1", "DISABLE_UPDATES": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "IS_SANDBOX": "1",
         "TERM": "xterm-256color",
@@ -278,13 +337,17 @@ def inner_review(journal, number):
     if runtime["mode"] == "native":
         if digest(runtime["executable"]) != runtime["sha256"]:
             raise ReviewError("Managed Claude changed since this round was prepared")
-    credentials = runtime["credentials_file"] if runtime["mode"] == "native" else CONTAINER_CREDENTIALS
-    (config / ".credentials.json").symlink_to(credentials)
+    if runtime.get('auth') == 'keychain':
+        os.environ['CLAUDE_SECURESTORAGE_CONFIG_DIR'] = ''
+        os.environ['USER'] = runtime['keychain_account']
+    else:
+        credentials = runtime["credentials_file"] if runtime["mode"] == "native" else CONTAINER_CREDENTIALS
+        (config / ".credentials.json").symlink_to(credentials)
     executable = runtime["executable"]
     version = checked([executable, "--version"])
     if version.split()[0] != runtime["version"]:
         raise ReviewError("Managed Claude version changed: " + version)
-    auth = subscription_auth([executable], journal.manifest["repo"])
+    auth = subscription_auth([executable, '--setting-sources', '', '--settings', json.dumps(claude_settings(runtime), separators=(',', ':'))], journal.manifest["repo"])
     write_json(home / '.claude.json', {
         'hasCompletedOnboarding': True, 'lastOnboardingVersion': runtime['version'],
         'theme': 'dark', 'bypassPermissionsModeAccepted': True,

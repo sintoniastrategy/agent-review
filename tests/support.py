@@ -38,11 +38,15 @@ class RepositoryTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.repo = Path(self.temporary.name) / "work ' tree"
         self.repo.mkdir()
+        home = Path(self.temporary.name) / 'home'
+        home.mkdir()
+        self.global_config = home / '.local/share/agent-review/config.json'
         clean = {key: value for key, value in os.environ.items() if key not in {
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
             "GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE",
         }}
+        clean['HOME'] = str(home)
         environment = patch.dict(os.environ, clean, clear=True)
         environment.start()
         self.addCleanup(environment.stop)

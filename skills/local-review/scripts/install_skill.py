@@ -72,8 +72,8 @@ def selected_skill(root):
     return None
 
 
-def skill_links(home):
-    return [home / '.agents/skills/local-review', home / '.claude/skills/local-review']
+def skill_links(home, name='sst-local-review'):
+    return [home / '.agents/skills' / name, home / '.claude/skills' / name]
 
 
 def check_links(home, target):
@@ -82,6 +82,18 @@ def check_links(home, target):
             continue
         if link.exists() or link.is_symlink():
             raise ValueError('Existing skill is not managed by this installer: ' + str(link))
+
+
+def link_skill(root, home):
+    target = root / 'current/local-review'
+    check_links(home, target)
+    for link in skill_links(home):
+        if not link.is_symlink():
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(target, target_is_directory=True)
+    for link in skill_links(home, 'local-review'):
+        if link.is_symlink() and link.resolve() == target.resolve():
+            link.unlink()
 
 
 def activate(root, home, release):
@@ -97,6 +109,7 @@ def activate(root, home, release):
         os.replace(temporary, root / 'current')
     finally:
         temporary.unlink(missing_ok=True)
+    link_skill(root, home)
 
 
 def update(root, home, automatic=False):
@@ -106,6 +119,7 @@ def update(root, home, automatic=False):
         current = selected_skill(root)
         stamp = root / 'last-check'
         if automatic and current is not None and stamp.is_file() and 0 <= time.time() - stamp.stat().st_mtime < INTERVAL:
+            link_skill(root, home)
             print('Update check already attempted within the last 24 hours.')
             return current
         check_links(home, root / 'current/local-review')
@@ -157,33 +171,42 @@ def show_skill(skill):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Install or update the local-review skill; no sudo or background service.')
+    parser = argparse.ArgumentParser(description='Install or update SST Local Review; no sudo or background service.')
     parser.add_argument('--check', action='store_true', help='Check this managed installation at most once every 24 hours')
+    parser.add_argument('--links-only', action='store_true', help='Migrate owned skill links without downloading a release')
     parser.add_argument('--home', type=Path, help='Install below this home directory instead of the current user home')
     args = parser.parse_args(argv)
     if sys.version_info < (3, 9) or platform.system() not in {'Linux', 'Darwin'}:
         parser.error('Python 3.9+ on Linux or macOS is required')
     script = Path(__file__).resolve()
-    root = managed_root(script) if args.check else None
-    if args.check and root is None:
+    root = managed_root(script) if args.check or args.links_only else None
+    if (args.check or args.links_only) and root is None:
         print('Manual or development copy: automatic updates are disabled.')
         show_skill(script.parent.parent)
         return 0
     home = root.parents[2] if root else (args.home or Path.home()).expanduser().resolve()
     root = root or home / '.local/share/agent-review'
     try:
-        skill = update(root, home, args.check)
+        if args.links_only:
+            with (root / 'update.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                skill = selected_skill(root)
+                if skill is None:
+                    raise ValueError('No active managed installation')
+                link_skill(root, home)
+        else:
+            skill = update(root, home, args.check)
     except (OSError, ValueError, tarfile.TarError) as error:
         print('Update unavailable: ' + str(error), file=sys.stderr)
         print('Run in a normal terminal outside the agent sandbox:\n' + manual_command(home), file=sys.stderr)
-        if args.check:
+        if args.check or args.links_only:
             show_skill(script.parent.parent)
             return 0
         return 1
     show_skill(skill)
-    if not args.check:
-        print('Linked for Codex and Claude Code. Start a new agent session and ask it to use local-review.')
-        print('The skill checks Git, tmux, Docker and Claude credentials before your first review.')
+    if not args.check and not args.links_only:
+        print('Linked for Codex and Claude Code. Start a new agent session and ask it to use SST Local Review (sst-local-review).')
+        print('The skill checks Git, tmux, the selected runtime and Claude credentials before your first review.')
     return 0
 
 
