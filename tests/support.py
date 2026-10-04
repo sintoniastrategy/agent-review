@@ -78,13 +78,17 @@ class RepositoryTest(unittest.TestCase):
     def fake_runtime(self, scenario="success", agent='claude'):
         directory = self.repo / ".agr" / "fixtures" / scenario / agent
         directory.mkdir(parents=True, exist_ok=True)
-        binary = directory / agent
+        binary = directory / 'package/bin/codex' if agent == 'codex' else directory / agent
+        binary.parent.mkdir(parents=True, exist_ok=True)
         binary.write_text("#!" + sys.executable + "\nimport runpy\nimport sys\nsys.argv[1:1] = [" + repr(scenario) + "]\nrunpy.run_path(" + repr(str(ROOT / 'tests' / ('fake_' + agent + '.py'))) + ", run_name='__main__')\n")
         binary.chmod(0o700)
         credentials = directory / "credentials.json"
         credentials.write_text(json.dumps({"test_only": True}))
         version = codex.RELEASE['version'] if agent == 'codex' else runtime.RELEASE['version']
-        return {"mode": "native", 'agent': agent, "version": version, "credentials_file": str(credentials), "window_name": "test/feature", "executable": str(binary), "sha256": runtime.digest(binary), "python": sys.executable, "entry": str(SCRIPTS / "review.py")}
+        managed = {"mode": "native", 'agent': agent, "version": version, "credentials_file": str(credentials), "window_name": "test/feature", "executable": str(binary), "sha256": runtime.digest(binary), "python": sys.executable, "entry": str(SCRIPTS / "review.py")}
+        if agent == 'codex':
+            managed['package_sha256'] = codex.package_digest(binary.parent.parent)
+        return managed
 
     def fake_docker_client(self):
         return {'command': ['/test-only/docker', '--host', 'unix:///test-only/docker.sock'], 'environment': {'HOME': str(self.repo), 'PATH': os.defpath}, 'endpoint': 'unix:///test-only/docker.sock', 'context': 'test'}

@@ -1,6 +1,7 @@
+import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
@@ -16,12 +17,44 @@ RELEASE = read_json(SKILL / 'codex-release.json')
 DOWNLOADS = 'https://github.com/openai/codex/releases/download/rust-v'
 
 
-def install_binary(destination):
+def package_digest(directory):
+    from .runtime import digest
+    directory = Path(directory)
+    if directory.is_symlink() or not directory.is_dir():
+        raise ReviewError('Managed Codex package is not a regular directory: ' + str(directory))
+    result = hashlib.sha256()
+    for path in sorted(directory.rglob('*')):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise ReviewError('Unexpected Codex package entry: ' + str(path))
+        if path.is_file():
+            result.update(path.relative_to(directory).as_posix().encode() + b'\0')
+            result.update(digest(path).encode() + b'\0')
+            result.update(str(path.stat().st_mode & 0o111).encode() + b'\0')
+    return result.hexdigest()
+
+
+def validate_package(directory, target):
+    metadata = read_json(directory / 'codex-package.json')
+    expected = {'layoutVersion': 1, 'version': RELEASE['version'], 'target': target, 'variant': 'codex', 'entrypoint': 'bin/codex', 'resourcesDir': 'codex-resources', 'pathDir': 'codex-path'}
+    if any(metadata.get(key) != value for key, value in expected.items()):
+        raise ReviewError('Codex package metadata does not match its pinned release')
+    executables = ['bin/codex', 'bin/codex-code-mode-host', 'codex-path/rg', 'codex-resources/zsh/bin/zsh']
+    if 'linux' in target:
+        executables.append('codex-resources/bwrap')
+    for name in executables:
+        path = directory / name
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise ReviewError('Codex package is missing an executable: ' + name)
+
+
+def install_package(destination):
     from .runtime import digest, platform_name
     destination = Path(destination)
+    if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+        raise ReviewError('Managed Codex package is not a regular directory: ' + str(destination))
     name = platform_name().removesuffix('-musl')
     expected = RELEASE['platforms'][name]
-    archive = destination.with_name('codex-release.tar.gz')
+    archive = destination.with_name(expected['archive'])
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not archive.is_file():
         if destination.exists():
@@ -32,8 +65,8 @@ def install_binary(destination):
         os.close(descriptor)
         temporary = Path(filename)
         try:
-            url = DOWNLOADS + RELEASE['version'] + '/' + expected['binary'] + '.tar.gz'
-            print('Downloading Codex ' + RELEASE['version'] + ' for ' + name, file=sys.stderr, flush=True)
+            url = DOWNLOADS + RELEASE['version'] + '/' + expected['archive']
+            print('Downloading Codex package ' + RELEASE['version'] + ' for ' + name, file=sys.stderr, flush=True)
             subprocess.run(['curl', '--fail', '--location', '--show-error', '--connect-timeout', '30', '--max-time', '600', '--output', str(temporary), url], check=True, stdout=sys.stderr)
             if temporary.stat().st_size != expected['size'] or digest(temporary) != expected['checksum']:
                 raise ReviewError('Downloaded Codex did not match its pinned size and SHA-256')
@@ -42,24 +75,35 @@ def install_binary(destination):
             temporary.unlink(missing_ok=True)
     if archive.stat().st_size != expected['size'] or digest(archive) != expected['checksum']:
         raise ReviewError('Managed Codex archive checksum mismatch: ' + str(archive))
-    descriptor, filename = tempfile.mkstemp(prefix='binary-', dir=destination.parent)
-    temporary = Path(filename)
-    try:
-        with os.fdopen(descriptor, 'wb') as output, tarfile.open(archive, 'r:gz') as bundle:
-            members = [member for member in bundle.getmembers() if member.name == expected['binary']]
-            if len(members) != 1 or not members[0].isfile():
-                raise ReviewError('Codex archive must contain one regular binary: ' + expected['binary'])
-            with bundle.extractfile(members[0]) as source:
-                shutil.copyfileobj(source, output)
+    with tempfile.TemporaryDirectory(prefix='package-', dir=destination.parent) as staging:
+        temporary = Path(staging) / 'package'
+        temporary.mkdir(mode=0o755)
+        entries = set()
+        with tarfile.open(archive, 'r|gz') as bundle:
+            for member in bundle:
+                path = PurePosixPath(member.name)
+                if not path.parts or path.is_absolute() or '..' in path.parts or path.as_posix() != member.name or member.name in entries or not (member.isfile() or member.isdir()):
+                    raise ReviewError('Unexpected Codex archive entry: ' + member.name)
+                entries.add(member.name)
+                target = temporary.joinpath(*path.parts)
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True, mode=0o755)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+                    with bundle.extractfile(member) as source, target.open('xb') as output:
+                        shutil.copyfileobj(source, output)
+                    target.chmod(0o755 if member.mode & 0o111 else 0o644)
+        temporary.chmod(0o755)
+        for path in temporary.rglob('*'):
+            if path.is_dir():
+                path.chmod(0o755)
+        validate_package(temporary, expected['target'])
         if destination.exists():
-            if not destination.is_file() or digest(destination) != digest(temporary):
-                raise ReviewError('Managed Codex checksum mismatch: ' + str(destination))
+            if package_digest(destination) != package_digest(temporary):
+                raise ReviewError('Managed Codex package checksum mismatch: ' + str(destination))
         else:
-            temporary.chmod(0o755)
             os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return destination
+    return destination / 'bin/codex'
 
 
 def subscription_auth(launcher, repo):

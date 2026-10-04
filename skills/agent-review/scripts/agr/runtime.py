@@ -253,7 +253,8 @@ def setup(repo, settings):
     if record["mode"] == "native":
         cache = local_directory(repo) / '.cache' / 'runtime'
         if agent == 'codex':
-            binary = codex.install_binary(cache / 'codex' / release['version'] / platform_name() / 'codex')
+            binary = codex.install_package(cache / 'codex' / release['version'] / platform_name() / 'package')
+            record['package_sha256'] = codex.package_digest(binary.parent.parent)
         else:
             binary = install_binary(cache / release['version'] / platform_name() / 'claude')
         record.update(executable=str(binary), sha256=digest(binary), python=sys.executable, entry=str(ENTRY))
@@ -273,7 +274,7 @@ def setup(repo, settings):
     image = checked(client['command'] + ["image", "inspect", "--format", "{{.Id}}", tag], env=client['environment'])
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
         raise ReviewError("Docker returned an invalid image ID")
-    record.update(identity, docker_client=client, image=image, image_tag=tag, executable='/opt/agr/bin/' + agent, python="/usr/local/bin/python3", entry="/opt/agr/scripts/review.py")
+    record.update(identity, docker_client=client, image=image, image_tag=tag, executable='/opt/agr/codex/bin/codex' if agent == 'codex' else '/opt/agr/bin/claude', python="/usr/local/bin/python3", entry="/opt/agr/scripts/review.py")
     return record
 
 
@@ -360,8 +361,9 @@ def inner_review(journal, number):
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     if record['reviewer'] == 'codex':
         executable = runtime['executable']
-        if runtime['mode'] == 'native' and digest(executable) != runtime['sha256']:
-            raise ReviewError('Managed Codex changed since this round was prepared')
+        if runtime['mode'] == 'native':
+            if not runtime.get('package_sha256') or codex.package_digest(Path(executable).parent.parent) != runtime['package_sha256']:
+                raise ReviewError('Managed Codex package changed or is incomplete; prepare a new round')
         credentials = runtime['credentials_file'] if runtime['mode'] == 'native' else CONTAINER_CREDENTIALS
         codex.initialize(home, credentials)
         os.chdir(home)

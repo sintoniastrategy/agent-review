@@ -3,6 +3,6 @@ ARG REVIEW_AGENT=claude
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 ripgrep && rm -rf /var/lib/apt/lists/*
 COPY scripts /opt/agr/scripts
 COPY runtime-release.json codex-release.json /opt/agr/
-RUN chmod -R a+rX /opt/agr/scripts && chmod a+r /opt/agr/*-release.json && python3 /opt/agr/scripts/install_${REVIEW_AGENT}.py /opt/agr/bin/${REVIEW_AGENT}
+RUN chmod -R a+rX /opt/agr/scripts && chmod a+r /opt/agr/*-release.json && if [ "$REVIEW_AGENT" = codex ]; then python3 /opt/agr/scripts/install_codex.py /opt/agr/codex; else python3 /opt/agr/scripts/install_claude.py /opt/agr/bin/claude; fi
 ENV PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1
 ENTRYPOINT ["python3", "/opt/agr/scripts/review.py"]

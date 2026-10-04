@@ -146,13 +146,24 @@ class CodexRuntimeTests(RepositoryTest):
     def test_native_setup_uses_codex_installer_and_records_the_pin(self):
         managed = self.fake_runtime(agent='codex')
         settings = runtime.configuration(self.repo, {'agent': 'codex', 'runtime': 'native', 'credentials_file': managed['credentials_file']})
-        with patch('agr.codex.install_binary', return_value=Path(managed['executable'])) as install, patch('agr.runtime.install_binary') as claude:
+        with patch('agr.codex.install_package', return_value=Path(managed['executable'])) as install, patch('agr.runtime.install_binary') as claude:
             result = runtime.setup(self.repo, settings)
         claude.assert_not_called()
         self.assertIn('/runtime/codex/' + codex.RELEASE['version'] + '/', str(install.call_args.args[0]))
         self.assertEqual(result['sha256'], managed['sha256'])
+        self.assertEqual(result['package_sha256'], managed['package_sha256'])
         self.assertEqual((result['agent'], result['version']), ('codex', codex.RELEASE['version']))
         self.assertTrue(result['sandbox']['enabled'])
+
+    def test_native_start_refuses_changed_package_before_authentication(self):
+        record = self.prepared(agent='codex')
+        binary = Path(record['runtime']['executable'])
+        binary.with_name('unexpected-helper').write_text('changed')
+        with patch('agr.codex.subscription_auth') as auth, patch('agr.runtime.os.execve') as launch:
+            with self.assertRaisesRegex(ReviewError, 'package changed or is incomplete'):
+                runtime.inner_review(self.journal, record['id'])
+        auth.assert_not_called()
+        launch.assert_not_called()
 
     def test_docker_build_and_launch_select_codex_without_writable_source(self):
         record = self.prepared(agent='codex')
@@ -162,7 +173,7 @@ class CodexRuntimeTests(RepositoryTest):
         with patch('agr.runtime.docker_connection', return_value=client), patch('agr.runtime.checked', side_effect=results), patch('agr.runtime.subprocess.run') as build:
             managed = runtime.setup(self.repo, settings)
         self.assertIn('REVIEW_AGENT=codex', build.call_args.args[0])
-        self.assertEqual(managed['executable'], '/opt/agr/bin/codex')
+        self.assertEqual(managed['executable'], '/opt/agr/codex/bin/codex')
         self.assertTrue(managed['image_tag'].startswith('agr-codex:' + codex.RELEASE['version']))
         record = self.journal.update_round(record['id'], runtime=managed)
         args = runtime.container_command(self.journal, record['id'])
@@ -175,69 +186,103 @@ class CodexRuntimeTests(RepositoryTest):
 
 
 class CodexInstallerTests(RepositoryTest):
-    def bundle(self, members=None):
-        data = b'fixture binary'
-        binary = 'codex-test-target'
+    def bundle(self, extra=None, missing=None):
+        metadata = {'layoutVersion': 1, 'version': codex.RELEASE['version'], 'target': 'test-linux', 'variant': 'codex', 'entrypoint': 'bin/codex', 'resourcesDir': 'codex-resources', 'pathDir': 'codex-path'}
+        files = {name: name.encode() for name in ('bin/codex', 'bin/codex-code-mode-host', 'codex-path/rg', 'codex-resources/zsh/bin/zsh', 'codex-resources/bwrap')}
+        files['codex-package.json'] = json.dumps(metadata).encode()
+        files.pop(missing, None)
         stream = io.BytesIO()
         with tarfile.open(fileobj=stream, mode='w:gz') as archive:
-            for name, kind in members or [(binary, tarfile.REGTYPE)]:
+            for name, data in files.items():
                 member = tarfile.TarInfo(name)
-                member.type = kind
-                member.size = len(data) if member.isfile() else 0
-                member.linkname = '/outside'
-                archive.addfile(member, io.BytesIO(data) if member.isfile() else None)
+                member.size = len(data)
+                member.mode = 0o644 if name.endswith('.json') else 0o755
+                archive.addfile(member, io.BytesIO(data))
+            if extra is not None:
+                archive.addfile(extra)
         archive = stream.getvalue()
-        return archive, {'binary': binary, 'size': len(archive), 'checksum': hashlib.sha256(archive).hexdigest()}
+        return archive, {'archive': 'codex-package-test.tar.gz', 'target': 'test-linux', 'size': len(archive), 'checksum': hashlib.sha256(archive).hexdigest()}
 
-    def test_download_and_cache_pin_both_archive_and_executable(self):
-        archive, expected = self.bundle()
-        destination = self.repo / '.agr/managed/codex'
+    def install(self, destination, archive, expected):
         def download(args, **kwargs):
             Path(args[args.index('--output') + 1]).write_bytes(archive)
         with patch('agr.runtime.platform_name', return_value='test-musl'), patch.dict(codex.RELEASE['platforms'], {'test': expected}), patch('agr.codex.subprocess.run', side_effect=download) as fetch:
-            self.assertEqual(codex.install_binary(destination), destination)
-            self.assertEqual(destination.read_bytes(), b'fixture binary')
-            self.assertTrue(os.access(destination, os.X_OK))
-            codex.install_binary(destination)
-            fetch.assert_called_once()
-            self.assertTrue(fetch.call_args.args[0][-1].endswith('/rust-v' + codex.RELEASE['version'] + '/codex-test-target.tar.gz'))
-            destination.write_bytes(b'changed')
-            with self.assertRaisesRegex(ReviewError, 'Managed Codex checksum mismatch'):
-                codex.install_binary(destination)
-        self.assertFalse(list(destination.parent.glob('binary-*')))
+            binary = codex.install_package(destination)
+        return binary, fetch
+
+    def test_download_preserves_full_layout_and_verifies_every_cached_file(self):
+        archive, expected = self.bundle()
+        destination = self.repo / '.agr/managed/package'
+        binary, fetch = self.install(destination, archive, expected)
+        self.assertEqual(binary, destination / 'bin/codex')
+        self.assertEqual(binary.read_bytes(), b'bin/codex')
+        self.assertTrue(os.access(destination / 'bin/codex-code-mode-host', os.X_OK))
+        self.assertTrue(os.access(destination / 'codex-resources/bwrap', os.X_OK))
+        self.assertTrue(fetch.call_args.args[0][-1].endswith('/rust-v' + codex.RELEASE['version'] + '/codex-package-test.tar.gz'))
+        _, fetch = self.install(destination, archive, expected)
+        fetch.assert_not_called()
+        (destination / 'bin/codex-code-mode-host').write_bytes(b'changed')
+        with self.assertRaisesRegex(ReviewError, 'package checksum mismatch'):
+            self.install(destination, archive, expected)
+        self.assertFalse(list(destination.parent.glob('package-*/')))
         self.assertFalse(list(destination.parent.glob('download-*')))
 
     def test_corrupt_download_is_not_installed(self):
         archive, expected = self.bundle()
-        destination = self.repo / '.agr/managed/codex'
-        def download(args, **kwargs):
-            Path(args[args.index('--output') + 1]).write_bytes(b'corrupt')
-        with patch('agr.runtime.platform_name', return_value='test'), patch.dict(codex.RELEASE['platforms'], {'test': expected}), patch('agr.codex.subprocess.run', side_effect=download):
-            with self.assertRaisesRegex(ReviewError, 'pinned size and SHA-256'):
-                codex.install_binary(destination)
+        destination = self.repo / '.agr/managed/package'
+        with self.assertRaisesRegex(ReviewError, 'pinned size and SHA-256'):
+            self.install(destination, b'corrupt', expected)
         self.assertEqual(list(destination.parent.iterdir()), [])
 
-    def test_missing_corrupt_or_nonregular_archives_do_not_replace_cache(self):
-        destination = self.repo / '.agr/managed/codex'
-        destination.parent.mkdir()
-        cases = [[('../codex-test-target', tarfile.REGTYPE)], [('codex-test-target', tarfile.SYMTYPE)], [('codex-test-target', tarfile.REGTYPE)] * 2]
-        for members in cases:
-            with self.subTest(members=members):
-                archive, expected = self.bundle(members)
-                cached = destination.with_name('codex-release.tar.gz')
-                cached.write_bytes(archive)
-                with patch('agr.runtime.platform_name', return_value='test'), patch.dict(codex.RELEASE['platforms'], {'test': expected}), patch('agr.codex.subprocess.run') as fetch:
-                    with self.assertRaisesRegex(ReviewError, 'one regular binary'):
-                        codex.install_binary(destination)
-                    cached.write_bytes(b'changed')
-                    with self.assertRaisesRegex(ReviewError, 'archive checksum mismatch'):
-                        codex.install_binary(destination)
-                    cached.unlink()
-                    destination.write_bytes(b'cached binary')
-                    with self.assertRaisesRegex(ReviewError, 'archive is missing'):
-                        codex.install_binary(destination)
-                    destination.unlink()
-                    fetch.assert_not_called()
+    def test_missing_runtime_helpers_never_install_a_partial_package(self):
+        for missing in ('bin/codex-code-mode-host', 'codex-path/rg', 'codex-resources/bwrap', 'codex-resources/zsh/bin/zsh'):
+            with self.subTest(missing=missing):
+                archive, expected = self.bundle(missing=missing)
+                destination = self.repo / '.agr' / missing.replace('/', '-') / 'package'
+                with self.assertRaisesRegex(ReviewError, 'missing an executable'):
+                    self.install(destination, archive, expected)
+                self.assertFalse(destination.exists())
+                self.assertFalse(list(destination.parent.glob('package-*/')))
+
+    def test_archive_paths_links_and_duplicate_files_are_rejected(self):
+        for number, (name, kind) in enumerate((('../outside', tarfile.REGTYPE), ('/outside', tarfile.REGTYPE), ('bin/link', tarfile.SYMTYPE), ('bin/link', tarfile.LNKTYPE), ('bin/fifo', tarfile.FIFOTYPE), ('bin/codex', tarfile.REGTYPE))):
+            with self.subTest(name=name, kind=kind):
+                member = tarfile.TarInfo(name)
+                member.type = kind
+                member.linkname = '/outside'
+                archive, expected = self.bundle(extra=member)
+                destination = self.repo / '.agr' / str(number) / 'package'
+                with self.assertRaisesRegex(ReviewError, 'Unexpected Codex archive entry'):
+                    self.install(destination, archive, expected)
+                self.assertFalse(destination.exists())
+
+    def test_missing_or_corrupt_archive_never_replaces_installed_package(self):
+        archive, expected = self.bundle()
+        destination = self.repo / '.agr/managed/package'
+        self.install(destination, archive, expected)
+        original = codex.package_digest(destination)
+        cached = destination.with_name(expected['archive'])
+        cached.write_bytes(b'changed')
+        with self.assertRaisesRegex(ReviewError, 'archive checksum mismatch'):
+            self.install(destination, archive, expected)
+        cached.unlink()
+        with self.assertRaisesRegex(ReviewError, 'archive is missing'):
+            self.install(destination, archive, expected)
+        self.assertEqual(codex.package_digest(destination), original)
+
+    def test_package_digest_detects_missing_files_permissions_and_links(self):
+        archive, expected = self.bundle()
+        destination = self.repo / '.agr/managed/package'
+        self.install(destination, archive, expected)
+        original = codex.package_digest(destination)
+        host = destination / 'bin/codex-code-mode-host'
+        host.chmod(0o644)
+        self.assertNotEqual(codex.package_digest(destination), original)
+        host.unlink()
+        self.assertNotEqual(codex.package_digest(destination), original)
+        host.symlink_to(destination / 'bin/codex')
+        with self.assertRaisesRegex(ReviewError, 'Unexpected Codex package entry'):
+            codex.package_digest(destination)
 
 
 class CodexPromptTests(unittest.TestCase):
