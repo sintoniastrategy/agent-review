@@ -70,9 +70,9 @@ def summary(value):
     record = value['record']
     phase = record['status']
     if phase == 'running':
-        phase += ' (reviewing)' if record.get('prompt_sent_at') else ' (waiting for Claude prompt)'
+        phase += ' (reviewing)' if record.get('prompt_sent_at') else ' (waiting for ' + record['reviewer'].capitalize() + ' prompt)'
     elif phase == 'completed' and record.get('session_open'):
-        phase += ' (Claude session open)'
+        phase += ' (' + record['reviewer'].capitalize() + ' session open)'
     label = round_name(record)
     lines = ['%s | %s | findings: %d | rechecks: %d | report: %s' % (label, phase, value['findings'], value['checks'], 'saved' if value['report'] else 'pending')]
     lines.append('Model: %s | effort: %s | preset: %s' % tuple(clean(record.get(key) or 'not recorded') for key in ('model', 'effort', 'preset')))

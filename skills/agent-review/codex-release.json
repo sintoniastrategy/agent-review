@@ -1,0 +1,25 @@
+{
+  "version": "0.160.0",
+  "platforms": {
+    "darwin-arm64": {
+      "binary": "codex-aarch64-apple-darwin",
+      "checksum": "07c3c7ca376a8f791115342f53138dda37e97cfa29b8125d0652d93784894b5d",
+      "size": 95893648
+    },
+    "darwin-x64": {
+      "binary": "codex-x86_64-apple-darwin",
+      "checksum": "a50c10606e4e81b8dd2f7b6bab635595aabc773c84cf2071773fbaf067825fbf",
+      "size": 104691669
+    },
+    "linux-arm64": {
+      "binary": "codex-aarch64-unknown-linux-musl",
+      "checksum": "883620139925f677e5a12c95ba87a1d7f421388ebb797b1c10aba42a04ede9d7",
+      "size": 101627917
+    },
+    "linux-x64": {
+      "binary": "codex-x86_64-unknown-linux-musl",
+      "checksum": "306865417d4ee7a927785852910a527f41e1e159add390ac5ae3accb67d44a13",
+      "size": 109304578
+    }
+  }
+}

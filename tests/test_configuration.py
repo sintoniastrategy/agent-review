@@ -120,7 +120,7 @@ class ConfigurationTests(RepositoryTest):
             ({'preset': str(incomplete)}, 'must not be empty'),
             ({'model': ''}, 'model must be'),
             ({'effort': 'extreme'}, 'Effort must be'),
-            ({'agent': 'codex'}, 'not implemented'),
+            ({'agent': 'unknown'}, 'Agent must be'),
             ({'runtime': 'podman'}, 'Runtime must be'),
             ({'auth': 'unknown'}, 'Auth must be'),
         )

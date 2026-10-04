@@ -16,12 +16,12 @@ The skill checks prerequisites, explains each step and recommends what to do nex
 
 ## How it works
 
-1. **Review.** A fresh interactive Claude session runs in tmux and reviews your branch changes, including uncommitted work, against your chosen base.
+1. **Review.** A fresh interactive Claude or Codex session runs in tmux and reviews your branch changes, including uncommitted work, against your chosen base.
 2. **Discuss.** Your existing coding agent keeps the task context. It walks through critical/high findings individually and presents medium/low findings in tables with recommendations.
 3. **Choose and fix.** Approve, skip or defer findings. Change your mind whenever needed. Your coding agent fixes the approved items in suitable batches.
 4. **Check again.** When you request another pass, the reviewer gets previous findings, your decisions and the fix diffs. Recorded fixes and reviewer confirmations remain separate.
 
-Stop whenever you've fixed enough. Findings, decisions and rechecks stay in readable Markdown files under `.agr/`. No PR, GitHub Actions, MCP server or database required. Orchestration runs locally; Claude inference still uses Anthropic's service.
+Stop whenever you've fixed enough. Findings, decisions and rechecks stay in readable Markdown files under `.agr/`. No PR, GitHub Actions, MCP server or database required. Orchestration runs locally; inference uses the selected provider's service.
 
 ## Which review tool should I use?
 
@@ -44,10 +44,10 @@ For a small, one-off review, the built-in option is simpler. SST earns its extra
 
 The command above installs the latest release into `~/.local/share/sst-agent-review`, with skill symlinks in `~/.agents/skills/sst-agent-review` and `~/.claude/skills/sst-agent-review`.
 
-You'll need **curl, Python 3.9+, Git, tmux and an existing Claude subscription login**. The skill manages its own pinned Claude binary and clean configuration. Prerequisites are checked, not installed automatically.
+You'll need **curl, Python 3.9+, Git, tmux and a Claude subscription or Codex ChatGPT login** for the selected reviewer. The skill manages its own pinned CLI and clean configuration. Prerequisites are checked, not installed automatically.
 
 - **Docker is the default:** local Linux Docker Engine, rootless or rootful, with source mounted read-only. Podman and userns-remap are unsupported.
-- **Native mode is optional:** ask for it on Linux or macOS. Native macOS uses your default Claude Code Keychain login; Docker and native Linux use a credentials file. Native sandboxing is best effort and may fall back to your user permissions. Full macOS validation is still pending.
+- **Native mode is optional:** ask for it on Linux or macOS. Claude uses Keychain on native macOS and a credentials file otherwise; its Bash sandbox is best effort and may fall back to your user permissions. Codex requires a ChatGPT `auth.json` in both modes and requests its built-in sandbox without an unsandboxed retry. Full macOS validation is still pending.
 
 Updates are checked on skill invocation at most once daily. New invocations use the updated version; running workflows retain theirs. If updating is blocked, the skill explains how to run the install command manually.
 
@@ -66,7 +66,7 @@ For Claude Code, use `~/.claude/skills` instead. Manual copies do not auto-updat
 
 | File | Applies to |
 | --- | --- |
-| [Bundled `defaults.ini`](skills/agent-review/defaults.ini) | Shipped defaults; replaced when the skill updates |
+| [Claude defaults](skills/agent-review/defaults.ini) or [Codex defaults](skills/agent-review/defaults-codex.ini) | Shipped defaults for the selected agent; replaced when the skill updates |
 | `~/.local/share/sst-agent-review/config.ini` | Your defaults for all projects |
 | `<worktree>/.agr/config.ini` | This worktree only; ignored by Git |
 
@@ -87,9 +87,11 @@ runtime = native
 auth = auto
 ```
 
-Model and effort still inherit from your personal file. `auth = auto` uses the default Keychain login on native macOS, otherwise a credentials file. Set `credentials_file = /absolute/path/to/credentials.json` to choose a file explicitly. Delete a key to inherit it again.
+Model and effort still inherit from your personal file. For Claude, `auth = auto` uses the default Keychain login on native macOS, otherwise a credentials file. Codex uses a file on both platforms. Set `credentials_file = /absolute/path/to/credentials.json` to choose a file explicitly. Delete a key to inherit it again.
 
-All supported keys are in [defaults.ini](skills/agent-review/defaults.ini): `agent`, `model`, `effort`, `preset`, `scope`, `runtime`, `auth`, `credentials_file`, `window_name`. Shipped defaults are **Claude Opus, xhigh effort, full review, Docker**. Only Claude can be launched as reviewer; Codex can be your author agent. There is no `configure` command.
+All supported keys are in [defaults.ini](skills/agent-review/defaults.ini): `agent`, `model`, `effort`, `preset`, `scope`, `runtime`, `auth`, `credentials_file`, `window_name`. Shipped defaults are **Claude Opus, xhigh effort, full review, Docker**. There is no `configure` command.
+
+Select Codex with `agent = codex` in either INI, or `prepare --agent codex` for one run. Its bundled defaults are **gpt-6.1-sol, xhigh effort**, using managed Codex CLI **0.160.0**. Explicit personal/worktree model and effort settings still override those defaults; switching agents does not translate model names. Codex reads `$CODEX_HOME/auth.json` or `~/.codex/auth.json` unless `credentials_file` is set. The managed CLI must report a ChatGPT login before launch; API-key authentication is refused. Codex Keychain-only logins are not supported by this isolated profile.
 
 Ask the skill to check settings, or run this from the worktree with your actual local base:
 
@@ -97,7 +99,7 @@ Ask the skill to check settings, or run this from the worktree with your actual 
 python3 ~/.local/share/sst-agent-review/current/agent-review/scripts/review.py preflight --base main --human
 ```
 
-It shows effective settings and checks prerequisites without starting a reviewer. Preparation flags can override model, effort, preset and scope for one run. Existing prepared rounds retain their settings.
+It shows effective settings and checks prerequisites without starting a reviewer. Preparation flags can override agent, model, effort, preset and scope for one run. Existing prepared rounds retain their settings. Claude and Codex can share an explicitly requested parallel pass, with separate IDs such as `r02-claude1` and `r02-codex1`.
 
 **Upgrading from JSON configuration:** convert each `config.json` to `config.ini` at the same location. Write `[review]`, then one `key = value` per line, without JSON braces, commas or quotes. A legacy file without an INI replacement produces a migration error. Once the INI exists, only it is used. Review journal files are unaffected.
 

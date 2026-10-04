@@ -11,7 +11,7 @@ import time
 from . import ReviewError, now, read_json, write_json
 from .source import same_source, snapshot
 from .store import Journal
-from . import reporting, runtime, tmux
+from . import reporting, runtime, tmux, codex
 
 
 def subscription_auth(launcher, repo):
@@ -46,6 +46,10 @@ def claude_command(record, directory):
     return args
 
 
+def reviewer_command(record, directory):
+    return codex.command(record, directory) if record['reviewer'] == 'codex' else claude_command(record, directory)
+
+
 def end_process(process):
     if process is None or process.poll() is not None:
         return
@@ -57,7 +61,9 @@ def end_process(process):
         process.wait(timeout=3)
 
 
-def input_ready(screen):
+def input_ready(screen, agent='claude'):
+    if agent == 'codex':
+        return codex.input_ready(screen)
     return any(line.strip() == '❯' for line in screen.splitlines())
 
 
@@ -90,7 +96,7 @@ def observe(process, journal, number, directory, interrupted):
             reporting.complete(output)
             return {'status': 'completed'}
         if process.poll() is not None:
-            return {'status': 'failed', 'error': 'Interactive Claude exited without a validated completion marker', 'exit_code': process.returncode}
+            return {'status': 'failed', 'error': 'Interactive ' + record['reviewer'].capitalize() + ' exited without a validated completion marker', 'exit_code': process.returncode}
         paths = [directory / 'terminal.log', output / 'progress.txt'] + reporting.files(output)
         activity = file_activity(paths)
         if activity != previous:
@@ -99,14 +105,14 @@ def observe(process, journal, number, directory, interrupted):
         if not submitted:
             if (output / '.runtime.json').is_file():
                 screen = tmux.capture(current)
-                if input_ready(screen):
+                if input_ready(screen, record['reviewer']):
                     auth = read_json(output / '.runtime.json')
                     tmux.send_file(current, directory / 'prompt.md')
                     journal.update_round(number, prompt_sent_at=now(), auth=auth['auth'], runtime_version=auth['version'])
                     submitted = True
                     last_progress = moment
             if not submitted and moment >= startup_deadline:
-                return {'status': 'failed', 'error': 'Claude did not reach the interactive input prompt; inspect terminal.log'}
+                return {'status': 'failed', 'error': record['reviewer'].capitalize() + ' did not reach the interactive input prompt; inspect terminal.log'}
         elif moment - last_progress >= record.get('idle_timeout', 300):
             return {'status': 'stalled', 'error': 'No terminal output or published findings before the idle timeout'}
         if moment - last_heartbeat >= 5:
@@ -163,11 +169,11 @@ def worker(directory, number):
             cache = journal.directory / '.cache'
             cache.mkdir(exist_ok=True)
             home = tempfile.mkdtemp(prefix='runtime-', dir=cache)
-            environment = runtime.environment(home, journal.manifest['repo'])
+            environment = runtime.environment(home, journal.manifest['repo'], agent=record['reviewer'])
             sandbox = record['runtime'].get('sandbox') or {'message': 'Native mode has no recorded Bash sandbox; commands may run with your user permissions.'}
             print(sandbox['message'], flush=True)
             args = [sys.executable, str(runtime.ENTRY), '_review', str(journal.directory), str(number)]
-        write_json(output / 'launch.json', {'process': args, 'claude': claude_command(record, output)})
+        write_json(output / 'launch.json', {'process': args, record['reviewer']: reviewer_command(record, output)})
         process = subprocess.Popen(args, cwd=journal.manifest['repo'], env=environment)
         journal.update_round(number, reviewer_pid=process.pid, session_open=True)
         outcome = observe(process, journal, number, output, interrupted)

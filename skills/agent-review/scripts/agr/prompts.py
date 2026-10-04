@@ -57,7 +57,7 @@ def prepare(journal, runtime, model=None, effort=None, parallel_with=None, prese
         anchor_inputs = journal.round_directory(parallel_with) / 'input'
     if selection['scope'] == 'changes' and previous is None:
         raise ReviewError('Changes-only review needs a previous completed review; select scope full for the first run')
-    record = journal.new_round(source, runtime, selection['model'], selection['effort'], parallel_with, preset=selection['preset'], scope=selection['scope'])
+    record = journal.new_round(source, runtime, selection['model'], selection['effort'], parallel_with, preset=selection['preset'], scope=selection['scope'], agent=selection['agent'])
     number = record['id']
     directory = journal.round_directory(number)
     inputs = directory / 'input'
@@ -101,7 +101,8 @@ def prepare(journal, runtime, model=None, effort=None, parallel_with=None, prese
         prompt += '\nPrimary diff: ' + str(inputs / ('full.diff' if selection['scope'] == 'full' else 'since-previous.diff'))
         prompt += '\nPrevious completed review: ' + (round_name(previous) if previous else 'none')
         prompt += '\n\nTask:\n' + manifest['task']
-        prompt += '\n\nInputs directory: ' + str(inputs)
+        prompt += '\n\nSource directory: ' + str(manifest['repo'])
+        prompt += '\nInputs directory: ' + str(inputs)
         prompt += '\nOutput directory: ' + str(output)
         prompt += '\nPublication command: ' + helper + ' publish ' + shlex.quote(str(output))
         prompt += '\nSnapshot tree: ' + source['tree'] + '\nBase reference: ' + source['base_ref'] + '\nBase commit: ' + source['base'] + '\nMerge base: ' + source['merge_base'] + '\nHEAD: ' + source['head'] + '\n'

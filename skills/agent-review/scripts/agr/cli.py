@@ -19,7 +19,7 @@ from .names import round_name
 
 
 def parser():
-    result = argparse.ArgumentParser(description="SST Agent Review helper; Python 3.9+, Git, tmux and managed Claude")
+    result = argparse.ArgumentParser(description="SST Agent Review helper; Python 3.9+, Git, tmux and managed reviewers")
     result.add_argument("--repo", default=".")
     result.add_argument("--session")
     commands = result.add_subparsers(dest="command", required=True)
@@ -36,9 +36,9 @@ def parser():
     review = commands.add_parser("prepare")
     review.add_argument('--human', action='store_true')
     review.add_argument("--parallel-with", metavar='REVIEWER')
-    review.add_argument('--agent', choices=('claude',))
+    review.add_argument('--agent', choices=configuration.AGENTS)
     review.add_argument('--model')
-    review.add_argument('--effort', choices=configuration.EFFORTS)
+    review.add_argument('--effort', choices=configuration.CODEX_EFFORTS)
     review.add_argument('--preset', metavar='NAME_OR_DIRECTORY')
     review.add_argument('--scope', choices=configuration.SCOPES)
     start = commands.add_parser("start")
@@ -196,14 +196,14 @@ def execute(args):
         result = {
             'tools': paths, 'base': base, 'base_commit': base_commit, 'head': head, 'merge_base': merge_base,
             **settings, **{key: selected[key] for key in configuration.REVIEW_KEYS},
-            'defaults': str(configuration.SKILL / 'defaults.ini'),
+            'defaults': str(configuration.SKILL / ('defaults-codex.ini' if selected['agent'] == 'codex' else 'defaults.ini')),
             'global_config': str(configuration.global_path()), 'worktree_config': str(repo / '.agr/config.ini'),
             'authentication': auth,
         }
         if settings['runtime'] == 'docker':
             result.update(runtime.docker_identity())
         else:
-            result['sandbox'] = runtime.native_sandbox()['message']
+            result['sandbox'] = runtime.native_sandbox(selected['agent'])['message']
         return '\n'.join(key + ': ' + str(value) for key, value in result.items()) if args.human else result
     if args.command == "setup":
         return runtime.setup(repo, runtime.configuration(repo))
@@ -228,7 +228,7 @@ def execute(args):
             prior = journal.round(parallel_with).get('previous_review') if parallel_with is not None else previous_review(journal.export())
             if prior is None:
                 raise ReviewError('Changes-only review needs a previous completed review; select scope full')
-        settings = runtime.setup(repo, runtime.configuration(repo, values))
+        settings = runtime.setup(repo, runtime.configuration(repo, values, agent=selected['agent']))
         record = prepare(journal, settings, parallel_with=parallel_with, selection=selected)
         return progress.describe(journal, record['id']) if args.human else record
     if command == "start":

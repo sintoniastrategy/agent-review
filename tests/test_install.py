@@ -232,7 +232,7 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(all(name.startswith('agent-review/') for name in names))
         self.assertFalse(any('__pycache__' in name or '.agr/' in name for name in names))
         self.assertIn('agent-review/scripts/install_skill.py', names)
-        for name in ('prompts/reviewer/policy.md', 'prompts/reviewer/followup.md', 'prompts/author/discuss.md', 'prompts/author/fix.md', 'presets/lenses/reviewer/review.md'):
+        for name in ('prompts/reviewer/policy.md', 'prompts/reviewer/followup.md', 'prompts/author/discuss.md', 'prompts/author/fix.md', 'presets/lenses/reviewer/review.md', 'defaults-codex.ini', 'codex-release.json', 'scripts/install_codex.py', 'scripts/agr/codex.py'):
             self.assertIn('agent-review/' + name, names)
         self.assertEqual((self.directory / 'first/install_skill.py').read_bytes(), (ROOT / 'skills/agent-review/scripts/install_skill.py').read_bytes())
         self.artifacts[installer.RELEASES + '/latest/download/release.json'] = (self.directory / 'first/release.json').read_bytes()

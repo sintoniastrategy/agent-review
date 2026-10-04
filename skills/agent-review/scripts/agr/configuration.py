@@ -9,7 +9,9 @@ SKILL = Path(__file__).resolve().parents[2]
 REVIEW_KEYS = ('agent', 'model', 'effort', 'preset', 'scope')
 RUNTIME_KEYS = ('runtime', 'auth', 'credentials_file', 'window_name')
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+CODEX_EFFORTS = EFFORTS + ('ultra',)
 SCOPES = ('full', 'changes')
+AGENTS = ('claude', 'codex')
 PROMPT_FILES = {
     'policy': 'reviewer/policy.md', 'protocol': 'reviewer/protocol.md',
     'followup': 'reviewer/followup.md', 'discuss': 'author/discuss.md', 'fix': 'author/fix.md',
@@ -34,8 +36,12 @@ def global_settings(values=None):
     return local(None, values)
 
 
-def effective(repo, values=None, global_values=None):
-    return {**defaults(), **global_settings(global_values), **local(repo, values)}
+def effective(repo, values=None, global_values=None, overrides=None):
+    inherited = {**global_settings(global_values), **local(repo, values)}
+    overrides = {key: value for key, value in (overrides or {}).items() if value is not None}
+    agent = overrides.get('agent', inherited.get('agent', defaults()['agent']))
+    agent = agent.strip() if isinstance(agent, str) else agent
+    return {**defaults(agent), **inherited, **overrides}
 
 
 def read_ini(path, required=False):
@@ -62,8 +68,10 @@ def read_ini(path, required=False):
     return values
 
 
-def defaults():
-    return read_ini(SKILL / 'defaults.ini', required=True)
+def defaults(agent='claude'):
+    if agent not in AGENTS:
+        raise ReviewError('Agent must be one of: ' + ', '.join(AGENTS))
+    return read_ini(SKILL / ('defaults.ini' if agent == 'claude' else 'defaults-codex.ini'), required=True)
 
 
 def read_prompt(path, source):
@@ -81,17 +89,15 @@ def skill_prompt(part):
 
 
 def load_review(repo, overrides=None, values=None, global_values=None):
-    settings = {key: value for key, value in effective(repo, values, global_values).items() if key in REVIEW_KEYS}
-    settings.update({key: value for key, value in (overrides or {}).items() if value is not None})
+    settings = {key: value for key, value in effective(repo, values, global_values, overrides).items() if key in REVIEW_KEYS}
     for key in REVIEW_KEYS:
         value = settings[key]
         if not isinstance(value, str) or not value.strip() or any(ord(character) < 32 for character in value):
             raise ReviewError(key + ' must be a nonempty single-line string')
         settings[key] = value.strip()
-    if settings['agent'] != 'claude':
-        raise ReviewError('Only the claude agent is supported; Codex launching is not implemented yet')
-    if settings['effort'] not in EFFORTS:
-        raise ReviewError('Effort must be one of: ' + ', '.join(EFFORTS))
+    efforts = CODEX_EFFORTS if settings['agent'] == 'codex' else EFFORTS
+    if settings['effort'] not in efforts:
+        raise ReviewError('Effort must be one of: ' + ', '.join(efforts))
     if settings['scope'] not in SCOPES:
         raise ReviewError('Scope must be one of: ' + ', '.join(SCOPES))
     preset = settings['preset']

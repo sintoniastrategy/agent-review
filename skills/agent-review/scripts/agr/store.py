@@ -104,9 +104,11 @@ class Journal:
                 status = event["status"]
         return status
 
-    def new_round(self, source, runtime, model=None, effort=None, parallel_with=None, preset=None, scope="full"):
+    def new_round(self, source, runtime, model=None, effort=None, parallel_with=None, preset=None, scope="full", agent="claude"):
         if not isinstance(runtime, dict) or runtime.get("mode") not in {"docker", "native"}:
             raise ReviewError("Prepare a managed docker or native runtime")
+        if agent not in {'claude', 'codex'} or runtime.get('agent', 'claude') != agent:
+            raise ReviewError('Selected agent does not match its prepared runtime')
         with self.access(True) as access:
             if self.state(access) != "active":
                 raise ReviewError("Session is stopped; reopen it explicitly")
@@ -120,12 +122,12 @@ class Journal:
                 raise ReviewError('Parallel anchor must still be active')
             number = len(rounds) + 1
             data = {
-                "id": number, "reviewer": "claude", "status": "preparing", "created_at": now(),
+                "id": number, "reviewer": agent, "status": "preparing", "created_at": now(),
                 "source": source, "runtime": runtime, "model": model, "effort": effort, "preset": preset, "scope": scope,
                 "session_id": str(uuid.uuid4()), "cancel_requested": False,
             }
             data['pass'] = anchor['pass'] if anchor else max((item.get('pass', item['id']) for item in rounds), default=0) + 1
-            data['slot'] = 1 + sum(item.get('pass') == data['pass'] for item in rounds)
+            data['slot'] = 1 + sum(item.get('pass') == data['pass'] and item['reviewer'] == agent for item in rounds)
             data['directory'] = names.round_name(data)
             write_json(self.directory / 'rounds' / data['directory'] / 'status.json', data)
             return data
