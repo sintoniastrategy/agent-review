@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -9,12 +10,34 @@ import sys
 import tarfile
 import tempfile
 
-from . import ReviewError, read_json
+from . import ReviewError, read_json, credentials, keychain
 
 
 SKILL = Path(__file__).resolve().parents[2]
 RELEASE = read_json(SKILL / 'codex-release.json')
 DOWNLOADS = 'https://github.com/openai/codex/releases/download/rust-v'
+DEFAULTS = 'defaults-codex.ini'
+OPTIONS = ('model', 'effort', 'auth', 'credentials_file')
+EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+
+
+def authentication(repo, values):
+    method = values['auth']
+    if method not in ('auto', 'file', 'keyring'):
+        raise ReviewError('Codex auth must be auto, file or keyring')
+    home = Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex').expanduser().resolve()
+    selected = values['credentials_file']
+    path = Path(selected).expanduser() if selected else home / 'auth.json'
+    if not path.is_absolute():
+        path = Path(repo) / path
+    if method == 'keyring' or method == 'auto' and not selected and not path.is_file() and platform.system() == 'Darwin':
+        if platform.system() != 'Darwin':
+            raise ReviewError('Managed Codex keyring authentication currently requires macOS')
+        account = 'cli|' + hashlib.sha256(str(home).encode('utf-8')).hexdigest()[:16]
+        source = credentials.keychain_source('Codex Auth', account)
+        if method == 'keyring' or keychain.present(source['keychain_service'], account):
+            return source
+    return credentials.file_source(path)
 
 
 def package_digest(directory):

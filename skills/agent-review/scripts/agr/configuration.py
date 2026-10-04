@@ -2,7 +2,7 @@ import configparser
 from pathlib import Path
 import re
 
-from . import ReviewError
+from . import ReviewError, agents
 
 
 SKILL = Path(__file__).resolve().parents[2]
@@ -11,7 +11,9 @@ RUNTIME_KEYS = ('runtime', 'auth', 'credentials_file', 'window_name')
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 CODEX_EFFORTS = EFFORTS + ('ultra',)
 SCOPES = ('full', 'changes')
-AGENTS = ('claude', 'codex')
+AGENTS = tuple(agents.ADAPTERS)
+COMMON_KEYS = ('agent', 'preset', 'scope', 'runtime', 'window_name')
+LEGACY_KEYS = ('model', 'effort', 'auth', 'credentials_file')
 PROMPT_FILES = {
     'policy': 'reviewer/policy.md', 'protocol': 'reviewer/protocol.md',
     'followup': 'reviewer/followup.md', 'discuss': 'author/discuss.md', 'fix': 'author/fix.md',
@@ -21,8 +23,11 @@ PROMPT_FILES = {
 def local(repo, values=None):
     if values is None:
         values = read_ini(Path(repo) / '.agr' / 'config.ini')
-    if not isinstance(values, dict) or set(values) - set(REVIEW_KEYS + RUNTIME_KEYS):
-        raise ReviewError('Configuration accepts only: ' + ', '.join(REVIEW_KEYS + RUNTIME_KEYS))
+    if not isinstance(values, dict) or set(values) - set(COMMON_KEYS + LEGACY_KEYS + AGENTS):
+        raise ReviewError('Configuration accepts review settings and agent sections: ' + ', '.join(AGENTS))
+    for agent in AGENTS:
+        if agent in values and (not isinstance(values[agent], dict) or set(values[agent]) - set(agents.adapter(agent).OPTIONS)):
+            raise ReviewError('Invalid settings in [' + agent + ']')
     return dict(values)
 
 
@@ -37,11 +42,22 @@ def global_settings(values=None):
 
 
 def effective(repo, values=None, global_values=None, overrides=None):
-    inherited = {**global_settings(global_values), **local(repo, values)}
+    inherited = {}
+    preferences = {agent: {} for agent in AGENTS}
+    owner = defaults()['agent']
+    for layer in (global_settings(global_values), local(repo, values)):
+        owner = layer.get('agent', owner)
+        owner = owner.strip() if isinstance(owner, str) else owner
+        agents.adapter(owner)
+        inherited.update({key: layer[key] for key in COMMON_KEYS if key in layer})
+        preferences[owner].update({key: layer[key] for key in LEGACY_KEYS if key in layer})
+        for agent in AGENTS:
+            preferences[agent].update(layer.get(agent, {}))
     overrides = {key: value for key, value in (overrides or {}).items() if value is not None}
-    agent = overrides.get('agent', inherited.get('agent', defaults()['agent']))
+    agent = overrides.get('agent', owner)
     agent = agent.strip() if isinstance(agent, str) else agent
-    return {**defaults(agent), **inherited, **overrides}
+    agents.adapter(agent)
+    return {**defaults(agent), **inherited, **preferences[agent], **overrides, 'agent': agent}
 
 
 def read_ini(path, required=False):
@@ -56,22 +72,32 @@ def read_ini(path, required=False):
             parser.read_file(source)
     except (OSError, UnicodeError, configparser.Error) as error:
         raise ReviewError('Cannot read configuration: ' + str(path) + ': ' + str(error)) from error
-    if parser.sections() != ['review'] or parser.defaults():
-        raise ReviewError(str(path) + ' requires one [review] section and no [DEFAULT] values')
-    values = dict(parser['review'])
-    keys = set(REVIEW_KEYS + RUNTIME_KEYS)
-    unknown = set(values) - keys
+    if not parser.sections() or set(parser.sections()) - set(('review',) + AGENTS) or parser.defaults():
+        raise ReviewError(str(path) + ' accepts [review], agent sections and no [DEFAULT] values')
+    values = dict(parser['review']) if parser.has_section('review') else {}
+    unknown = set(values) - set(COMMON_KEYS + LEGACY_KEYS)
     if unknown:
         raise ReviewError(str(path) + ': unknown settings: ' + ', '.join(sorted(unknown)))
-    if required and set(values) != keys:
-        raise ReviewError(str(path) + ' requires settings: ' + ', '.join(sorted(keys)))
+    for agent in AGENTS:
+        if parser.has_section(agent):
+            section = dict(parser[agent])
+            unknown = set(section) - set(agents.adapter(agent).OPTIONS)
+            if unknown:
+                raise ReviewError(str(path) + ': unknown [' + agent + '] settings: ' + ', '.join(sorted(unknown)))
+            values[agent] = section
+    if required:
+        agent = values.get('agent')
+        backend = agents.adapter(agent)
+        selected = {key: values[key] for key in LEGACY_KEYS if key in values}
+        selected.update(values.get(agent, {}))
+        if not set(COMMON_KEYS) <= values.keys() or set(selected) != set(backend.OPTIONS):
+            raise ReviewError(str(path) + ' requires complete review and ' + agent + ' defaults')
+        return {**{key: values[key] for key in COMMON_KEYS}, **selected}
     return values
 
 
 def defaults(agent='claude'):
-    if agent not in AGENTS:
-        raise ReviewError('Agent must be one of: ' + ', '.join(AGENTS))
-    return read_ini(SKILL / ('defaults.ini' if agent == 'claude' else 'defaults-codex.ini'), required=True)
+    return read_ini(SKILL / agents.adapter(agent).DEFAULTS, required=True)
 
 
 def read_prompt(path, source):
@@ -95,7 +121,7 @@ def load_review(repo, overrides=None, values=None, global_values=None):
         if not isinstance(value, str) or not value.strip() or any(ord(character) < 32 for character in value):
             raise ReviewError(key + ' must be a nonempty single-line string')
         settings[key] = value.strip()
-    efforts = CODEX_EFFORTS if settings['agent'] == 'codex' else EFFORTS
+    efforts = agents.adapter(settings['agent']).EFFORTS
     if settings['effort'] not in efforts:
         raise ReviewError('Effort must be one of: ' + ', '.join(efforts))
     if settings['scope'] not in SCOPES:

@@ -48,15 +48,15 @@ class CodexConfigurationTests(RepositoryTest):
         self.assertEqual((selected['model'], selected['effort']), ('explicit-model', 'ultra'))
         selected = configuration.load_review(self.repo, {'model': 'one-run-model'})
         self.assertEqual(selected['model'], 'one-run-model')
-        with self.assertRaisesRegex(ReviewError, 'Effort must be'):
-            configuration.load_review(self.repo, {'agent': 'claude'})
+        claude = configuration.load_review(self.repo, {'agent': 'claude'})
+        self.assertEqual((claude['model'], claude['effort']), ('opus', 'xhigh'))
         selected = configuration.load_review(self.repo, {'agent': 'claude', 'effort': 'max'})
-        self.assertEqual(selected['model'], 'explicit-model')
+        self.assertEqual(selected['model'], 'opus')
 
     def test_preflight_uses_codex_file_auth_on_macos_without_installing(self):
         managed = self.fake_runtime(agent='codex')
         self.write_settings({'agent': 'codex', 'runtime': 'native', 'credentials_file': managed['credentials_file']})
-        with patch('agr.runtime.platform.system', return_value='Darwin'), patch('agr.cli.shutil.which', return_value='/tools/fake'), patch('agr.cli.runtime.setup') as setup:
+        with patch('agr.runtime.platform.system', return_value='Darwin'), patch('agr.runtime.shutil.which', return_value='/tools/fake'), patch('agr.cli.runtime.setup') as setup:
             result = self.command('preflight', '--base', 'base')
         setup.assert_not_called()
         self.assertEqual((result['agent'], result['auth']), ('codex', 'file'))
@@ -67,7 +67,7 @@ class CodexConfigurationTests(RepositoryTest):
         with patch.dict(os.environ, {'CODEX_HOME': str(self.repo / '.agr/login')}):
             settings = runtime.configuration(self.repo, {'agent': 'codex'})
         self.assertEqual(settings['credentials_file'], str(self.repo / '.agr/login/auth.json'))
-        with self.assertRaisesRegex(ReviewError, 'keychain mode belongs to Claude'):
+        with self.assertRaisesRegex(ReviewError, 'Codex auth must be'):
             runtime.configuration(self.repo, {'agent': 'codex', 'auth': 'keychain'})
 
     def test_parallel_mixed_agents_keep_separate_slots_and_shared_snapshot(self):

@@ -44,7 +44,7 @@ class RepositoryTest(unittest.TestCase):
         clean = {key: value for key, value in os.environ.items() if key not in {
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
-            'OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_ENDPOINT', 'CODEX_HOME',
+            'OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_ENDPOINT', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
             "GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE",
         }}
         clean['HOME'] = str(home)
@@ -68,7 +68,9 @@ class RepositoryTest(unittest.TestCase):
     def write_settings(self, values, path=None):
         path = path or self.repo / '.agr/config.ini'
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('[review]\n' + ''.join(key + ' = ' + str(value) + '\n' for key, value in values.items()), encoding='utf-8')
+        common = {key: value for key, value in values.items() if not isinstance(value, dict)}
+        sections = {'review': common, **{key: value for key, value in values.items() if isinstance(value, dict)}}
+        path.write_text('\n'.join('[' + section + ']\n' + ''.join(key + ' = ' + str(value) + '\n' for key, value in options.items()) for section, options in sections.items()), encoding='utf-8')
         return path
 
     def prepared(self, scenario="success", **options):

@@ -11,7 +11,7 @@ import time
 from . import ReviewError, now, read_json, write_json
 from .source import same_source, snapshot
 from .store import Journal
-from . import reporting, runtime, tmux, codex
+from . import reporting, runtime, tmux, codex, credentials
 
 
 def subscription_auth(launcher, repo):
@@ -79,7 +79,7 @@ def file_activity(paths):
     return result
 
 
-def observe(process, journal, number, directory, interrupted):
+def observe(process, journal, number, directory, interrupted, bridge=None):
     record = journal.round(number)
     output = directory / 'output'
     last_progress = time.monotonic()
@@ -88,6 +88,8 @@ def observe(process, journal, number, directory, interrupted):
     submitted = False
     startup_deadline = time.monotonic() + 60
     while True:
+        if bridge:
+            bridge.sync()
         moment = time.monotonic()
         current = journal.round(number)
         if interrupted[0] or current.get('cancel_requested'):
@@ -121,9 +123,11 @@ def observe(process, journal, number, directory, interrupted):
         time.sleep(0.1)
 
 
-def keep_session(process, journal, number, interrupted):
+def keep_session(process, journal, number, interrupted, bridge=None):
     last_heartbeat = 0
     while process.poll() is None:
+        if bridge:
+            bridge.sync()
         record = journal.round(number)
         if interrupted[0] or record.get('close_requested'):
             return
@@ -150,6 +154,7 @@ def worker(directory, number):
     handlers = {}
     process = None
     home = None
+    bridge = None
     finished_at = None
     outcome = {'status': 'failed', 'error': 'Worker did not complete'}
     session_error = None
@@ -161,6 +166,11 @@ def worker(directory, number):
         journal.update_round(number, expected={'starting'}, status='running', worker_pid=os.getpid(), started_at=now(), heartbeat_at=now())
         if not same_source(record['source'], snapshot(journal.manifest['repo'], journal.manifest['base'])):
             raise ReviewError('Source changed since preparation; prepare a new round')
+        managed = record['runtime']
+        if managed.get('auth') == 'keychain' and (record['reviewer'] == 'codex' or managed['mode'] == 'docker'):
+            bridge = credentials.Bridge(managed, journal.directory / '.cache')
+            credential_file = bridge.open()
+            record = journal.update_round(number, runtime={**managed, 'credentials_file': credential_file, 'credential_transport': 'file'})
         if record['runtime']['mode'] == 'docker':
             args = runtime.container_command(journal, number)
             environment = runtime.docker_client(record['runtime'])['environment']
@@ -176,13 +186,13 @@ def worker(directory, number):
         write_json(output / 'launch.json', {'process': args, record['reviewer']: reviewer_command(record, output)})
         process = subprocess.Popen(args, cwd=journal.manifest['repo'], env=environment)
         journal.update_round(number, reviewer_pid=process.pid, session_open=True)
-        outcome = observe(process, journal, number, output, interrupted)
+        outcome = observe(process, journal, number, output, interrupted, bridge)
         if outcome['status'] == 'completed' and not same_source(record['source'], snapshot(journal.manifest['repo'], journal.manifest['base'])):
             outcome.update(status='source_changed', error='Source changed during review; retained findings refer to the prepared snapshot')
         if outcome['status'] == 'completed':
             finished = journal.update_round(number, expected={'running'}, **outcome, finished_at=now())
             finished_at = finished['finished_at']
-            keep_session(process, journal, number, interrupted)
+            keep_session(process, journal, number, interrupted, bridge)
     except Exception as error:
         if finished_at:
             session_error = str(error)
@@ -194,6 +204,8 @@ def worker(directory, number):
         actions = [lambda: end_process(process)]
         if record.get('container'):
             actions.append(lambda: runtime.cleanup_container(record))
+        if bridge:
+            actions.append(bridge.close)
         if home:
             actions.append(lambda: shutil.rmtree(home))
         for action in actions:

@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import pwd
 import re
 import shutil
 import subprocess
@@ -15,6 +14,7 @@ import tempfile
 from . import ReviewError, read_json, write_json
 from . import configuration as review_config
 from . import codex
+from . import agents, credentials
 from .source import git
 from .store import local_directory
 
@@ -72,30 +72,22 @@ def install_binary(destination):
     return destination
 
 
-def configuration(repo, values=None, global_values=None, agent=None):
-    values = review_config.effective(repo, values, global_values, {'agent': agent})
+def configuration(repo, values=None, global_values=None, agent=None, overrides=None):
+    selected = {**(overrides or {})}
+    if agent is not None:
+        selected['agent'] = agent
+    values = review_config.effective(repo, values, global_values, selected)
     agent = values['agent'].strip()
     mode = values['runtime']
+    if mode == 'auto':
+        mode = 'docker'
     if mode not in {"docker", "native"}:
-        raise ReviewError("Runtime must be docker or native")
-    default_credentials = Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex') / 'auth.json' if agent == 'codex' else Path.home() / '.claude/.credentials.json'
-    credentials = Path(values['credentials_file'] or default_credentials).expanduser()
-    if not credentials.is_absolute():
-        credentials = Path(repo) / credentials
-    credentials = credentials.resolve()
-    auth = values['auth']
-    if auth not in {'auto', 'file', 'keychain'}:
-        raise ReviewError('Auth must be auto, file or keychain')
-    if agent == 'codex' and auth == 'keychain':
-        raise ReviewError('Codex requires auth = file with a ChatGPT auth.json; keychain mode belongs to Claude')
-    if auth == 'keychain' and (platform.system() != 'Darwin' or mode != 'native'):
-        raise ReviewError('Keychain authentication requires native macOS; set runtime = native or use auth = file with credentials_file in config.ini')
+        raise ReviewError("Runtime must be auto, docker or native")
+    authentication = agents.adapter(agent).authentication(repo, values)
     name = values['window_name'] or None
     if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(character) < 33 or ord(character) > 126 for character in name)):
         raise ReviewError("Window name must contain 1 to 80 ASCII characters without whitespace")
-    if auth == 'auto':
-        auth = 'keychain' if agent == 'claude' and platform.system() == 'Darwin' and mode == 'native' and not values['credentials_file'] else 'file'
-    return {"runtime": mode, 'agent': agent, 'auth': auth, "credentials_file": str(credentials), "window_name": name}
+    return {"runtime": mode, 'agent': agent, "window_name": name, **authentication}
 
 
 def auth_source(settings):
@@ -106,24 +98,24 @@ def auth_source(settings):
 
 
 def keychain_account():
-    account = pwd.getpwuid(os.getuid()).pw_name
-    return account if re.fullmatch(r'[a-zA-Z0-9._-]+', account) else 'claude-code-user'
+    return agents.adapter('claude').account()
 
 
 def check_credentials(settings):
-    if settings.get('agent') == 'codex':
-        if not Path(settings['credentials_file']).is_file():
-            raise ReviewError('Set credentials_file in config.ini to an existing Codex ChatGPT auth.json: ' + settings['credentials_file'])
-        return 'credentials file present; ChatGPT login checked by managed Codex before launch'
-    if auth_source(settings) == 'keychain':
-        result = subprocess.run(['/usr/bin/security', 'find-generic-password', '-a', keychain_account(), '-s', 'Claude Code-credentials'],
-                                stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
-        if result.returncode:
-            raise ReviewError('Claude subscription login was not found in the macOS Keychain; sign in to Claude Code with its default profile first')
-        return 'macOS Keychain entry present; subscription checked by managed Claude before launch'
-    if not Path(settings['credentials_file']).is_file():
-        raise ReviewError('Set credentials_file in config.ini to an existing subscription credentials file: ' + settings['credentials_file'] + '; native macOS can use runtime = native with auth = keychain')
-    return 'credentials file present; subscription checked by managed Claude before launch'
+    selected = {**settings, 'auth': auth_source(settings)}
+    if selected['auth'] == 'keychain':
+        selected.setdefault('keychain_service', 'Claude Code-credentials')
+        selected.setdefault('keychain_account', keychain_account())
+    return credentials.check(selected)
+
+
+def prerequisites(settings):
+    required = ('git', 'tmux', 'docker') if settings['runtime'] == 'docker' else ('git', 'tmux', 'curl')
+    paths = {name: shutil.which(name) for name in required}
+    missing = [name for name, path in paths.items() if path is None]
+    if missing:
+        raise ReviewError('Missing required tools: ' + ', '.join(missing))
+    return paths
 
 
 def native_path():
@@ -174,7 +166,7 @@ def docker_connection():
     if not executable:
         if shutil.which('podman'):
             raise ReviewError('Podman is not supported yet; use Docker Engine without userns-remap')
-        raise ReviewError('Docker is required by default; explicitly set runtime = native in config.ini to use native mode with weaker isolation')
+        raise ReviewError('Docker is required for the selected runtime; set [review] runtime = native to use native mode with weaker isolation')
     executable = str(Path(executable).absolute())
     keys = ('HOME', 'PATH', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
             'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH',
@@ -246,10 +238,14 @@ def docker_identity(client=None):
 
 
 def setup(repo, settings):
+    prerequisites(settings)
     check_credentials(settings)
     agent = settings.get('agent', 'claude')
     release = codex.RELEASE if agent == 'codex' else RELEASE
     record = {"mode": settings["runtime"], 'agent': agent, "version": release["version"], 'auth': auth_source(settings), "credentials_file": settings['credentials_file'], "window_name": settings["window_name"]}
+    for key in ('keychain_service', 'keychain_account'):
+        if key in settings:
+            record[key] = settings[key]
     if record["mode"] == "native":
         cache = local_directory(repo) / '.cache' / 'runtime'
         if agent == 'codex':
@@ -260,8 +256,6 @@ def setup(repo, settings):
         record.update(executable=str(binary), sha256=digest(binary), python=sys.executable, entry=str(ENTRY))
         common = git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir').decode().strip()
         record.update(sandbox=native_sandbox(agent), read_directories=[str(SKILL), common])
-        if record['auth'] == 'keychain':
-            record['keychain_account'] = keychain_account()
         print(record['sandbox']['message'], file=sys.stderr, flush=True)
         return record
     client = docker_connection()
@@ -380,7 +374,7 @@ def inner_review(journal, number):
     if runtime["mode"] == "native":
         if digest(runtime["executable"]) != runtime["sha256"]:
             raise ReviewError("Managed Claude changed since this round was prepared")
-    if runtime.get('auth') == 'keychain':
+    if runtime.get('auth') == 'keychain' and runtime.get('credential_transport') != 'file':
         os.environ['CLAUDE_SECURESTORAGE_CONFIG_DIR'] = ''
         os.environ['USER'] = runtime['keychain_account']
     else:

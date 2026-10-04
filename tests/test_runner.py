@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from contextlib import ExitStack
 
 from .support import RepositoryTest, TmuxTest, fake_launcher, until
 from agr import ReviewError
@@ -50,6 +51,40 @@ class ActivityTests(RepositoryTest):
 
 
 class WorkerCleanupTests(RepositoryTest):
+    def test_keychain_bridge_is_shared_with_runtime_observers_and_closed(self):
+        for agent, mode, bridged in (('codex', 'native', True), ('codex', 'docker', True), ('claude', 'docker', True), ('claude', 'native', False)):
+            with self.subTest(agent=agent, mode=mode):
+                record = self.prepared(agent=agent)
+                managed = {**record['runtime'], 'mode': mode, 'auth': 'keychain',
+                    'keychain_service': 'service', 'keychain_account': 'account', 'docker_client': self.fake_docker_client()}
+                self.journal.update_round(record['id'], status='starting', launch_ready=True, runtime=managed)
+                with ExitStack() as stack:
+                    stack.enter_context(patch('agr.runner.sys.stdin.isatty', return_value=True))
+                    stack.enter_context(patch('agr.runner.sys.stdout.isatty', return_value=True))
+                    stack.enter_context(patch('agr.runner.snapshot', return_value=record['source']))
+                    stack.enter_context(patch('agr.runner.runtime.container_command', return_value=['test-only-docker']))
+                    launch = stack.enter_context(patch('agr.runner.subprocess.Popen'))
+                    observe = stack.enter_context(patch('agr.runner.observe', return_value={'status': 'completed'}))
+                    keep = stack.enter_context(patch('agr.runner.keep_session'))
+                    stack.enter_context(patch('agr.runner.end_process'))
+                    stack.enter_context(patch('agr.runner.runtime.cleanup_container'))
+                    bridge = stack.enter_context(patch('agr.runner.credentials.Bridge'))
+                    bridge.return_value.open.return_value = '/private/bridge/credentials.json'
+                    launch.return_value.pid = 12345
+                    self.assertEqual(worker(self.journal.directory, record['id']), 0)
+                result = self.journal.round(record['id'])
+                if bridged:
+                    bridge.assert_called_once_with(managed, self.journal.directory / '.cache')
+                    bridge.return_value.close.assert_called_once()
+                    self.assertEqual(result['runtime']['credentials_file'], '/private/bridge/credentials.json')
+                    self.assertEqual(result['runtime']['credential_transport'], 'file')
+                    self.assertIs(observe.call_args.args[-1], bridge.return_value)
+                    self.assertIs(keep.call_args.args[-1], bridge.return_value)
+                else:
+                    bridge.assert_not_called()
+                    self.assertNotIn('credential_transport', result['runtime'])
+                self.assertTrue(result['cleanup_complete'])
+
     def test_container_cleanup_is_attempted_when_stopping_the_client_fails(self):
         record = self.prepared()
         managed = {**record['runtime'], 'mode': 'docker', 'docker_client': self.fake_docker_client()}

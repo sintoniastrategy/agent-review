@@ -122,7 +122,7 @@ class ConfigurationTests(RepositoryTest):
             ({'effort': 'extreme'}, 'Effort must be'),
             ({'agent': 'unknown'}, 'Agent must be'),
             ({'runtime': 'podman'}, 'Runtime must be'),
-            ({'auth': 'unknown'}, 'Auth must be'),
+            ({'auth': 'unknown'}, 'Claude auth must be'),
         )
         for values, message in cases:
             with self.subTest(values=values):
@@ -231,7 +231,7 @@ class ConfigurationTests(RepositoryTest):
         self.write_settings({'model': 'sonnet', 'effort': 'medium'}, self.global_config)
         config = self.write_settings({'runtime': 'native', 'credentials_file': managed['credentials_file'], 'effort': 'high'})
         original = config.read_bytes()
-        with patch('agr.cli.shutil.which', side_effect=lambda name, **kwargs: '/tools/' + name), patch('agr.cli.runtime.setup') as setup:
+        with patch('agr.runtime.shutil.which', side_effect=lambda name, **kwargs: '/tools/' + name), patch('agr.cli.runtime.setup') as setup:
             result = self.command('preflight', '--base', 'base')
             self.assertEqual((result['model'], result['effort'], result['runtime'], result['auth']), ('sonnet', 'high', 'native', 'file'))
             self.assertEqual(result['global_config'], str(self.global_config))
@@ -286,7 +286,7 @@ class ConfigurationTests(RepositoryTest):
 
     def test_auto_auth_and_empty_optional_values_use_runtime_defaults(self):
         self.write_settings({'runtime': 'native', 'credentials_file': '/fixture/credentials.json', 'window_name': 'repo/branch'}, self.global_config)
-        with patch('agr.runtime.platform.system', return_value='Darwin'):
+        with patch('agr.runtime.platform.system', return_value='Darwin'), patch('agr.keychain.present', return_value=True):
             self.assertEqual(runtime.configuration(self.repo)['auth'], 'file')
             self.write_settings({'credentials_file': '', 'window_name': ''})
             settings = runtime.configuration(self.repo)

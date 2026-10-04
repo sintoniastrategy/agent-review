@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import shutil
 
 from . import ReviewError, now, read_json
 from .prompts import prepare, previous_review
@@ -23,7 +22,9 @@ def parser():
     result.add_argument("--repo", default=".")
     result.add_argument("--session")
     commands = result.add_subparsers(dest="command", required=True)
-    commands.add_parser("setup")
+    setup = commands.add_parser("setup")
+    setup.add_argument('--agent', choices=configuration.AGENTS)
+    setup.add_argument('--runtime', choices=('auto', 'docker', 'native'))
     check = commands.add_parser('preflight')
     check.add_argument('--base')
     check.add_argument('--human', action='store_true')
@@ -36,11 +37,13 @@ def parser():
     review = commands.add_parser("prepare")
     review.add_argument('--human', action='store_true')
     review.add_argument("--parallel-with", metavar='REVIEWER')
-    review.add_argument('--agent', choices=configuration.AGENTS)
-    review.add_argument('--model')
-    review.add_argument('--effort', choices=configuration.CODEX_EFFORTS)
-    review.add_argument('--preset', metavar='NAME_OR_DIRECTORY')
-    review.add_argument('--scope', choices=configuration.SCOPES)
+    for selected in (check, review):
+        selected.add_argument('--agent', choices=configuration.AGENTS)
+        selected.add_argument('--model')
+        selected.add_argument('--effort', choices=configuration.CODEX_EFFORTS)
+        selected.add_argument('--preset', metavar='NAME_OR_DIRECTORY')
+        selected.add_argument('--scope', choices=configuration.SCOPES)
+        selected.add_argument('--runtime', choices=('auto', 'docker', 'native'))
     start = commands.add_parser("start")
     start.add_argument('--human', action='store_true')
     start.add_argument("round", metavar='REVIEWER')
@@ -175,13 +178,9 @@ def execute(args):
     if args.command == 'instructions':
         return configuration.skill_prompt(args.phase)
     if args.command == 'preflight':
-        settings = runtime.configuration(repo)
-        selected = configuration.load_review(repo)
-        tools = ('git', 'tmux', 'docker') if settings['runtime'] == 'docker' else ('git', 'tmux')
-        paths = {name: shutil.which(name) for name in tools}
-        missing = [name for name, path in paths.items() if path is None]
-        if missing:
-            raise ReviewError('Missing required tools: ' + ', '.join(missing))
+        selected = configuration.load_review(repo, {key: getattr(args, key) for key in configuration.REVIEW_KEYS})
+        settings = runtime.configuration(repo, agent=selected['agent'], overrides={'runtime': args.runtime})
+        paths = runtime.prerequisites(settings)
         auth = runtime.check_credentials(settings)
         base = args.base
         session = repo / '.agr/session.json'
@@ -196,7 +195,7 @@ def execute(args):
         result = {
             'tools': paths, 'base': base, 'base_commit': base_commit, 'head': head, 'merge_base': merge_base,
             **settings, **{key: selected[key] for key in configuration.REVIEW_KEYS},
-            'defaults': str(configuration.SKILL / ('defaults-codex.ini' if selected['agent'] == 'codex' else 'defaults.ini')),
+            'defaults': str(configuration.SKILL / configuration.agents.adapter(selected['agent']).DEFAULTS),
             'global_config': str(configuration.global_path()), 'worktree_config': str(repo / '.agr/config.ini'),
             'authentication': auth,
         }
@@ -206,7 +205,7 @@ def execute(args):
             result['sandbox'] = runtime.native_sandbox(selected['agent'])['message']
         return '\n'.join(key + ': ' + str(value) for key, value in result.items()) if args.human else result
     if args.command == "setup":
-        return runtime.setup(repo, runtime.configuration(repo))
+        return runtime.setup(repo, runtime.configuration(repo, agent=args.agent, overrides={'runtime': args.runtime}))
     if args.command == "init":
         resolve(repo, args.base)
         journal = Journal.create(repo, args.base, args.task_file.read_text(encoding="utf-8"))
@@ -228,7 +227,7 @@ def execute(args):
             prior = journal.round(parallel_with).get('previous_review') if parallel_with is not None else previous_review(journal.export())
             if prior is None:
                 raise ReviewError('Changes-only review needs a previous completed review; select scope full')
-        settings = runtime.setup(repo, runtime.configuration(repo, values, agent=selected['agent']))
+        settings = runtime.setup(repo, runtime.configuration(repo, values, agent=selected['agent'], overrides={'runtime': args.runtime}))
         record = prepare(journal, settings, parallel_with=parallel_with, selection=selected)
         return progress.describe(journal, record['id']) if args.human else record
     if command == "start":
