@@ -74,7 +74,7 @@ class WorkerCleanupTests(RepositoryTest):
                     self.assertEqual(worker(self.journal.directory, record['id']), 0)
                 result = self.journal.round(record['id'])
                 if bridged:
-                    bridge.assert_called_once_with(managed, self.journal.directory / '.cache')
+                    bridge.assert_called_once_with(managed)
                     bridge.return_value.close.assert_called_once()
                     self.assertEqual(result['runtime']['credentials_file'], '/private/bridge/credentials.json')
                     self.assertEqual(result['runtime']['credential_transport'], 'file')

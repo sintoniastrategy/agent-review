@@ -82,6 +82,29 @@ class RuntimeTests(RepositoryTest):
         encoded = runtime.mount("/path/with, comma", "/target with space", True)
         self.assertEqual(next(csv.reader([encoded])), ["type=bind", "source=/path/with, comma", "target=/target with space", "readonly"])
 
+    def test_container_rejects_source_mounts_overlapping_private_credentials(self):
+        record = self.docker_record()
+        for directory in (self.repo / 'credentials', self.repo.parent):
+            with self.subTest(directory=directory), patch('agr.runtime.credentials.private_directory', return_value=directory):
+                with self.assertRaisesRegex(ReviewError, 'expose private credential storage'):
+                    runtime.container_command(self.journal, record['id'])
+
+    def test_container_rejects_git_mount_exposing_private_credentials(self):
+        record = self.docker_record()
+        common = self.repo.parent / 'shared-git'
+        private = common / 'credentials'
+        with patch('agr.runtime.git', return_value=str(common).encode()), patch('agr.runtime.credentials.private_directory', return_value=private):
+            with self.assertRaisesRegex(ReviewError, 'expose private credential storage'):
+                runtime.container_command(self.journal, record['id'])
+
+    def test_container_resolves_private_storage_parent_symlinks_before_mounting(self):
+        record = self.docker_record()
+        alias = self.repo.parent / 'private-alias'
+        alias.symlink_to(self.repo, target_is_directory=True)
+        with patch('agr.runtime.credentials.private_directory', return_value=alias / 'credentials'):
+            with self.assertRaisesRegex(ReviewError, 'expose private credential storage'):
+                runtime.container_command(self.journal, record['id'])
+
     def test_native_home_is_private_and_credentials_remain_linked(self):
         record = self.prepared()
         home = self.journal.directory / 'runtime-home'

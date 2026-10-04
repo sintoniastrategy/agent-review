@@ -168,7 +168,7 @@ def worker(directory, number):
             raise ReviewError('Source changed since preparation; prepare a new round')
         managed = record['runtime']
         if managed.get('auth') == 'keychain' and (record['reviewer'] == 'codex' or managed['mode'] == 'docker'):
-            bridge = credentials.Bridge(managed, journal.directory / '.cache')
+            bridge = credentials.Bridge(managed)
             credential_file = bridge.open()
             record = journal.update_round(number, runtime={**managed, 'credentials_file': credential_file, 'credential_transport': 'file'})
         if record['runtime']['mode'] == 'docker':

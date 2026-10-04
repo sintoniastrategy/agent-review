@@ -1,14 +1,18 @@
 import ctypes
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import threading
+import time
 from unittest.mock import Mock, patch
 
 from .support import RepositoryTest
 from agr import ReviewError, configuration, credentials, keychain, runtime
 from agr.cli import execute, parser
+from agr.store import Journal
 
 
 class AgentSettingsTests(RepositoryTest):
@@ -107,12 +111,15 @@ class CredentialBridgeTests(RepositoryTest):
         replacement = patch('agr.keychain.Item', Item)
         replacement.start()
         self.addCleanup(replacement.stop)
-        self.bridge = credentials.Bridge({'keychain_service': 'fixture-service', 'keychain_account': 'fixture-account'}, self.journal.directory / '.cache')
+        self.settings = {'keychain_service': 'fixture-service', 'keychain_account': 'fixture-account'}
+        self.bridge = credentials.Bridge(self.settings)
 
     def test_private_bridge_preserves_mount_inode_and_syncs_refreshed_tokens(self):
         path = Path(self.bridge.open())
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.bridge.cache.stat().st_mode & 0o777, 0o700)
+        self.assertFalse(path.is_relative_to(self.repo))
         original_inode = path.stat().st_ino
         refreshed = {'tokens': {'access_token': 'new', 'refresh_token': 'new-refresh'}}
         path.write_text(json.dumps(refreshed))
@@ -154,6 +161,81 @@ class CredentialBridgeTests(RepositoryTest):
         path.write_text(json.dumps(self.value))
         self.bridge.close()
         self.assertFalse(path.exists())
+
+    def test_storage_rejects_shared_permissions_symlinks_and_foreign_owners(self):
+        directory = credentials.private_directory()
+        directory.mkdir(parents=True, mode=0o755)
+        directory.chmod(0o755)
+        with self.assertRaisesRegex(ReviewError, 'private directory'):
+            self.bridge.open()
+        directory.chmod(0o700)
+        with patch('agr.credentials.os.getuid', return_value=os.getuid() + 1):
+            with self.assertRaisesRegex(ReviewError, 'owned by the current user'):
+                self.bridge.open()
+        directory.rmdir()
+        directory.symlink_to(self.repo, target_is_directory=True)
+        with self.assertRaisesRegex(ReviewError, 'private directory'):
+            self.bridge.open()
+
+    def test_same_account_updates_from_different_journals_are_serialized(self):
+        other_repo = Path(self.temporary.name) / 'other-worktree'
+        other_repo.mkdir()
+        other_journal = Journal.create(other_repo, 'base', 'Concurrent credential fixture')
+        records = [journal.new_round({}, {'mode': 'docker', **self.settings}) for journal in (self.journal, other_journal)]
+        bridges = [credentials.Bridge(record['runtime']) for record in records]
+        updates = [{'tokens': {'access_token': 'refreshed-' + str(index)}} for index in range(2)]
+        for bridge, update in zip(bridges, updates):
+            bridge.open()
+            bridge.write(update)
+        self.assertEqual(bridges[0].lock, bridges[1].lock)
+        owner = self
+        entered = threading.Lock()
+        simultaneous = [0, 0]
+        ready = threading.Barrier(2)
+
+        class Item:
+            def __init__(self, service, account):
+                pass
+
+            def __enter__(self):
+                with entered:
+                    simultaneous[0] += 1
+                    simultaneous[1] = max(simultaneous)
+                self.value = json.loads(json.dumps(owner.value))
+                time.sleep(0.1)
+                return self
+
+            def replace(self, value):
+                owner.value = value
+
+            def __exit__(self, *args):
+                with entered:
+                    simultaneous[0] -= 1
+
+        def synchronize(bridge):
+            ready.wait(timeout=5)
+            try:
+                bridge.sync(force=True)
+                return 'updated'
+            except ReviewError as error:
+                return str(error)
+
+        with patch('agr.keychain.Item', Item), ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(synchronize, bridges))
+        self.assertEqual(results.count('updated'), 1)
+        winner = results.index('updated')
+        loser = 1 - winner
+        self.assertIn('another session', results[loser])
+        self.assertEqual(simultaneous, [0, 1])
+        self.assertEqual(self.value, updates[winner])
+        self.assertEqual(json.loads(bridges[loser].path.read_text()), updates[loser])
+        bridges[winner].close()
+        self.assertTrue(bridges[winner].lock.is_file())
+
+    def test_different_keychain_items_use_independent_locks(self):
+        for field in ('keychain_service', 'keychain_account'):
+            other = credentials.Bridge({**self.settings, field: 'other'})
+            self.assertNotEqual(other.lock, self.bridge.lock)
 
 
 class KeychainTests(RepositoryTest):

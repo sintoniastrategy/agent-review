@@ -104,7 +104,7 @@ Authentication is agent-specific:
 
 Explicit Keychain/keyring authentication requires macOS. Custom Claude Keychain profiles are not discovered. Codex `auto` prefers an existing file without reading your Codex config; use `[codex] auth = keyring` to select Keychain explicitly when both exist. The managed CLI checks subscription/ChatGPT authentication before inference; API-key fallback is refused.
 
-The Keychain bridge stores credentials only in a temporary directory with mode `0700` and a file with mode `0600`, synchronizes refreshed tokens, and deletes the file after successful session closure. A detected conflicting login or synchronization error retains the private file and reports its path for recovery. Credentials are never included in prompts or command arguments.
+The Keychain bridge stores credentials under `~/.local/share/sst-agent-review/credentials/`, outside the mounted project, with private directories (`0700`) and files (`0600`). Each container receives only its own credential file. A shared lock for each Keychain item serializes bridge updates across journals and worktrees. The bridge synchronizes refreshed tokens and deletes the temporary file after successful session closure. A detected conflicting login or synchronization error retains the private file and reports its path for recovery. Credentials are never included in prompts or command arguments.
 
 Ask the skill to check settings, or run this from the worktree with your actual local base:
 

@@ -304,13 +304,17 @@ def container_command(journal, number):
     record = journal.round(number)
     runtime = record["runtime"]
     repo = Path(journal.manifest["repo"])
+    common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
+    private = credentials.private_directory().resolve()
+    for source in (repo.resolve(), common.resolve()):
+        if private.is_relative_to(source) or source.is_relative_to(private):
+            raise ReviewError('Source or Git mount would expose private credential storage: ' + str(private))
     name = "agr-" + record["session_id"]
     args = docker_client(runtime)['command'] + ["run", "--rm", "--init", "--interactive", "--tty", "--name", name,
             "--label", "agr.session=" + record["session_id"], "--user", runtime["user"],
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
             "--tmpfs", "/tmp:rw,exec,nosuid,mode=1777", "--workdir", str(repo)]
     args += ["--mount", mount(repo, repo, True)]
-    common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
     if not common.is_relative_to(repo):
         args += ["--mount", mount(common, common, True)]
     output = journal.round_directory(number) / "output"

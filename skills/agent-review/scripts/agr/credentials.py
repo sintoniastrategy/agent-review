@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 import time
 
@@ -18,6 +19,10 @@ def keychain_source(service, account):
     return {'auth': 'keychain', 'credentials_file': '', 'keychain_service': service, 'keychain_account': account}
 
 
+def private_directory():
+    return Path.home() / '.local/share/sst-agent-review/credentials'
+
+
 def check(settings):
     agent = settings.get('agent', 'claude')
     if settings['auth'] == 'keychain':
@@ -31,10 +36,10 @@ def check(settings):
 
 
 class Bridge:
-    def __init__(self, settings, cache):
+    def __init__(self, settings):
         self.service = settings['keychain_service']
         self.account = settings['keychain_account']
-        self.cache = Path(cache)
+        self.cache = private_directory()
         self.directory = None
         self.expected = None
         self.last_check = 0
@@ -42,6 +47,10 @@ class Bridge:
         self.lock = self.cache / ('keychain-' + identity + '.lock')
 
     def open(self):
+        self.cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+        metadata = self.cache.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+            raise ReviewError('Credential storage must be a private directory owned by the current user: ' + str(self.cache))
         with locked(self.lock), keychain.Item(self.service, self.account) as item:
             self.expected = item.value
         self.directory = Path(tempfile.mkdtemp(prefix='credentials-', dir=self.cache))
