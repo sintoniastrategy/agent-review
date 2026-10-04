@@ -114,4 +114,4 @@ def initialize(home, credentials):
 
 
 def input_ready(screen):
-    return 'context left' in screen and any(re.fullmatch(r'[^A-Za-z0-9]*Ask Codex to do anything\s*', line) for line in screen.splitlines())
+    return any(re.fullmatch(r'\s*[›»❯]\s+Ask Codex to do anything\s*', line) for line in screen.splitlines())

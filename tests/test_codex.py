@@ -243,9 +243,14 @@ class CodexInstallerTests(RepositoryTest):
 class CodexPromptTests(unittest.TestCase):
     def test_only_empty_codex_composer_is_ready(self):
         for prefix in ('› ', '» ', '❯ ', '\u00a0›\u00a0'):
-            self.assertTrue(input_ready(prefix + 'Ask Codex to do anything\n? for shortcuts 100% context left', 'codex'))
-        for screen in ('Loading...', '› 1. Yes', '› Ask Codex to do anything', '› /review\n100% context left', 'Quoted: Ask Codex to do anything\n100% context left'):
+            for footer in ('', '\n? for shortcuts 100% context left', '\nGPT-6.1-Sol medium · ~'):
+                self.assertTrue(input_ready(prefix + 'Ask Codex to do anything' + footer, 'codex'))
+        for screen in ('Loading...', '› 1. Yes', '› /review\n100% context left', 'Quoted: Ask Codex to do anything\n100% context left', 'Ask Codex to do anything', '> Ask Codex to do anything', '› 1. Ask Codex to do anything', '› Ask Codex to do anything else'):
             self.assertFalse(input_ready(screen, 'codex'), screen)
+
+    def test_live_startup_screen_without_context_footer_is_ready(self):
+        screen = (Path(__file__).parent / 'fixtures/codex-ready.txt').read_text()
+        self.assertTrue(input_ready(screen, 'codex'))
 
 
 class CodexTmuxTests(TmuxTest):

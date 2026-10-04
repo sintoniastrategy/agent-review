@@ -33,7 +33,7 @@ def read_input():
     settings = termios.tcgetattr(0)
     tty.setraw(0)
     try:
-        print('\x1b[?2004h\r\n› Ask Codex to do anything\r\n  ? for shortcuts     100% context left\r\n', end='', flush=True)
+        print('\x1b[?2004h\r\n› Ask Codex to do anything\r\n  GPT-6.1-Sol medium · ~\r\n', end='', flush=True)
         data = b''
         while not data.endswith(b'\x1b[201~\r'):
             data += os.read(0, 65536)
