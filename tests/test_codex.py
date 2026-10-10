@@ -60,7 +60,7 @@ class CodexConfigurationTests(RepositoryTest):
             result = self.command('preflight', '--base', 'base')
         setup.assert_not_called()
         self.assertEqual((result['agent'], result['auth']), ('codex', 'file'))
-        self.assertTrue(result['defaults'].endswith('/defaults-codex.ini'))
+        self.assertEqual(result['defaults'], str(configuration.SKILL / 'defaults.ini'))
         self.assertIn('workspace-write', result['sandbox'])
         self.assertIn('ChatGPT', result['authentication'])
         self.assertEqual(self.journal.rows('rounds'), [])

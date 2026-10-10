@@ -86,18 +86,24 @@ def read_ini(path, required=False):
                 raise ReviewError(str(path) + ': unknown [' + agent + '] settings: ' + ', '.join(sorted(unknown)))
             values[agent] = section
     if required:
-        agent = values.get('agent')
-        backend = agents.adapter(agent)
-        selected = {key: values[key] for key in LEGACY_KEYS if key in values}
-        selected.update(values.get(agent, {}))
-        if not set(COMMON_KEYS) <= values.keys() or set(selected) != set(backend.OPTIONS):
-            raise ReviewError(str(path) + ' requires complete review and ' + agent + ' defaults')
-        return {**{key: values[key] for key in COMMON_KEYS}, **selected}
+        if not set(COMMON_KEYS) <= values.keys() or set(LEGACY_KEYS) & values.keys():
+            raise ReviewError(str(path) + ' requires complete shared defaults under [review] and agent settings in their own sections')
+        agents.adapter(values['agent'])
+        for agent in AGENTS:
+            if set(values.get(agent, {})) != set(agents.adapter(agent).OPTIONS):
+                raise ReviewError(str(path) + ' requires complete [' + agent + '] defaults')
     return values
 
 
-def defaults(agent='claude'):
-    return read_ini(SKILL / agents.adapter(agent).DEFAULTS, required=True)
+def defaults_path():
+    return SKILL / 'defaults.ini'
+
+
+def defaults(agent=None):
+    values = read_ini(defaults_path(), required=True)
+    agent = values['agent'] if agent is None else agent
+    agents.adapter(agent)
+    return {**{key: values[key] for key in COMMON_KEYS}, **values[agent], 'agent': agent}
 
 
 def read_prompt(path, source):

@@ -51,7 +51,7 @@ Selection precedence, from lowest to highest:
 
 | File or input | Purpose |
 | --- | --- |
-| Installed `defaults.ini` or `defaults-codex.ini` | Complete shipped defaults for the selected agent; replaced by managed updates |
+| Installed `defaults.ini` | Complete shared review defaults and each agent's defaults in separate sections; replaced by managed updates |
 | `~/.local/share/sst-agent-review/config.ini` | Personal overrides shared by worktrees |
 | Worktree `.agr/config.ini` | Local overrides for this worktree; ignored by Git |
 | Arguments to `preflight` / `prepare` | Agent, model, effort, preset, scope and runtime for one reviewer |
@@ -71,9 +71,15 @@ model = opus
 effort = xhigh
 auth = auto
 credentials_file =
+
+[codex]
+model = gpt-6.1-sol
+effort = xhigh
+auth = auto
+credentials_file =
 ```
 
-`agent` accepts `claude` and `codex`. The effective agent selects its bundled defaults before personal, worktree and preparation overrides are applied. Codex defaults to `model = gpt-6.1-sol` and `effort = xhigh`; all other defaults match the block above. Agent-specific overrides stay in their own sections when selecting another agent. Legacy model, effort, auth and credentials_file under [review] belong to the agent selected at that layer (inheriting the preceding layer's agent, initially Claude). Explicit agent sections take precedence within that layer; CLI selection never transfers legacy preferences to another agent. `opus` is Claude's latest-Opus alias, not a pinned model version; use a full model name to select a particular version. Effort accepts `low`, `medium`, `high`, `xhigh`, and `max`, plus `ultra` for Codex; scope accepts `full` and `changes`. The selected alias or name is frozen at preparation, but an alias may resolve to a newer model at launch. The helper does not claim to record the server's resolved model version.
+`agent` accepts `claude` and `codex`. The effective agent selects its section from the single bundled `defaults.ini`; shared settings come from `[review]`. Personal, worktree and preparation overrides then apply in order. Each agent's defaults are validated against its own supported options. Agent-specific overrides stay in their own sections when selecting another agent. Legacy model, effort, auth and credentials_file under [review] belong to the agent selected at that layer (inheriting the preceding layer's agent, initially Claude). Explicit agent sections take precedence within that layer; CLI selection never transfers legacy preferences to another agent. `opus` is Claude's latest-Opus alias, not a pinned model version; use a full model name to select a particular version. Effort accepts `low`, `medium`, `high`, `xhigh`, and `max`, plus `ultra` for Codex; scope accepts `full` and `changes`. The selected alias or name is frozen at preparation, but an alias may resolve to a newer model at launch. The helper does not claim to record the server's resolved model version.
 
 `runtime` accepts `auto`, `docker` or `native`; auto also selects Docker on both platforms. `[claude] auth` accepts `auto`, `file` or `keychain`; `[codex] auth` accepts `auto`, `file` or `keyring`. Explicit Keychain/keyring selection requires macOS. In auto mode an explicit credentials_file always selects that file. Otherwise Claude prefers the default macOS Keychain entry if present, then `$CLAUDE_CONFIG_DIR/.credentials.json` or `~/.claude/.credentials.json`. Codex prefers `$CODEX_HOME/auth.json` or `~/.codex/auth.json` if present, then that home's macOS Keychain entry; it does not load the user's config.toml. Use explicit keyring if both exist and Keychain is intended. An empty `window_name` uses the automatic repo/worktree name; an explicit name must contain 1–80 ASCII characters without whitespace. Empty optional values override inherited custom values. Other settings must be nonempty.
 

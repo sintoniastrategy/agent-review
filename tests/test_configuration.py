@@ -21,7 +21,8 @@ class ConfigurationTests(RepositoryTest):
     def skill(self):
         path = Path(self.temporary.name) / 'skill'
         self.preset(path / 'presets' / 'focused')
-        (path / 'defaults.ini').write_text('[review]\nagent = claude\nmodel = sonnet\neffort = high\npreset = focused\nscope = full\nruntime = docker\nauth = auto\ncredentials_file =\nwindow_name =\n')
+        defaults = (configuration.SKILL / 'defaults.ini').read_text()
+        (path / 'defaults.ini').write_text(defaults.replace('preset = default', 'preset = focused').replace('model = opus', 'model = sonnet').replace('effort = xhigh', 'effort = high', 1))
         shutil.copytree(configuration.SKILL / 'prompts', path / 'prompts')
         return path
 
@@ -218,13 +219,67 @@ class ConfigurationTests(RepositoryTest):
 
     def test_defaults_are_strict_and_prompt_text_is_not_interpolated(self):
         skill = self.skill()
+        defaults = skill / 'defaults.ini'
+        original = defaults.read_text()
         (skill / 'presets/focused/reviewer/review.md').write_text('Review {literal} with 100% coverage\n')
         with patch('agr.configuration.SKILL', skill):
             self.assertEqual(configuration.load_review(self.repo)['review_prompt'], 'Review {literal} with 100% coverage\n')
-            for text in ('[review]\nmodel=opus\n', '[review]\nmodel=opus\nmodel=sonnet\n'):
-                (skill / 'defaults.ini').write_text(text)
-                with self.assertRaises(ReviewError):
-                    configuration.load_review(self.repo)
+            cases = (
+                '[review]\nmodel=opus\n',
+                '[review]\nmodel=opus\nmodel=sonnet\n',
+                original.replace('runtime = docker\n', ''),
+                original.replace('model = sonnet\n', ''),
+                original.replace('model = gpt-6.1-sol\n', ''),
+                original.split('[codex]')[0],
+                original.replace('agent = claude', 'agent = unknown'),
+                original.replace('[review]', '[review]\nmodel = misplaced'),
+                original.replace('[codex]', '[codex]\nunknown = value'),
+            )
+            for text in cases:
+                with self.subTest(text=text), patch('agr.cli.runtime.setup') as setup:
+                    defaults.write_text(text)
+                    with self.assertRaises(ReviewError):
+                        self.command('prepare')
+                    setup.assert_not_called()
+                    self.assertEqual(defaults.read_text(), text)
+                    self.assertEqual(self.journal.rows('rounds'), [])
+            defaults.unlink()
+            with self.assertRaisesRegex(ReviewError, 'Cannot read configuration:.*defaults.ini'):
+                configuration.load_review(self.repo)
+
+    def test_shared_defaults_keep_common_values_and_each_agents_supported_options(self):
+        skill = self.skill()
+        path = skill / 'defaults.ini'
+        values = configuration.read_ini(path)
+        values.update(scope='changes', window_name='shared-window')
+        values['claude'].update(auth='file', credentials_file='claude.json')
+        values['codex'].update(effort='ultra', profile='codex-profile')
+        self.write_settings(values, path)
+        backend = configuration.agents.adapter('codex')
+        with patch('agr.configuration.SKILL', skill), patch.object(backend, 'OPTIONS', (*backend.OPTIONS, 'profile')):
+            claude = configuration.effective(self.repo)
+            codex = configuration.effective(self.repo, overrides={'agent': 'codex'})
+        for selected in (claude, codex):
+            self.assertEqual((selected['preset'], selected['scope'], selected['runtime'], selected['window_name']), ('focused', 'changes', 'docker', 'shared-window'))
+        self.assertEqual((claude['agent'], claude['model'], claude['effort'], claude['auth'], claude['credentials_file']), ('claude', 'sonnet', 'high', 'file', 'claude.json'))
+        self.assertNotIn('profile', claude)
+        self.assertEqual((codex['agent'], codex['model'], codex['effort'], codex['auth'], codex['credentials_file'], codex['profile']), ('codex', 'gpt-6.1-sol', 'ultra', 'auto', '', 'codex-profile'))
+
+    def test_bundled_agent_selection_controls_legacy_preferences_without_leaking_on_override(self):
+        skill = self.skill()
+        path = skill / 'defaults.ini'
+        path.write_text(path.read_text().replace('agent = claude', 'agent = codex'))
+        with patch('agr.configuration.SKILL', skill):
+            selected = configuration.load_review(self.repo)
+            self.assertEqual((selected['agent'], selected['model']), ('codex', 'gpt-6.1-sol'))
+            self.write_settings({'model': 'legacy-codex', 'effort': 'medium'}, self.global_config)
+            selected = configuration.load_review(self.repo)
+            self.assertEqual((selected['model'], selected['effort']), ('legacy-codex', 'medium'))
+            selected = configuration.load_review(self.repo, {'agent': 'claude'})
+            self.assertEqual((selected['agent'], selected['model'], selected['effort']), ('claude', 'sonnet', 'high'))
+            self.write_settings({'agent': 'claude'})
+            selected = configuration.load_review(self.repo)
+            self.assertEqual((selected['agent'], selected['model']), ('claude', 'sonnet'))
 
     def test_preflight_shows_effective_settings_without_mutating_configuration(self):
         managed = self.fake_runtime()
@@ -235,6 +290,7 @@ class ConfigurationTests(RepositoryTest):
             result = self.command('preflight', '--base', 'base')
             self.assertEqual((result['model'], result['effort'], result['runtime'], result['auth']), ('sonnet', 'high', 'native', 'file'))
             self.assertEqual(result['global_config'], str(self.global_config))
+            self.assertEqual(result['defaults'], str(configuration.SKILL / 'defaults.ini'))
             self.assertEqual(result['worktree_config'], str(config))
             self.assertEqual(result['credentials_file'], managed['credentials_file'])
             text = self.command('preflight', '--base', 'base', '--human')

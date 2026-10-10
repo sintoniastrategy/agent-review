@@ -195,7 +195,7 @@ def execute(args):
         result = {
             'tools': paths, 'base': base, 'base_commit': base_commit, 'head': head, 'merge_base': merge_base,
             **settings, **{key: selected[key] for key in configuration.REVIEW_KEYS},
-            'defaults': str(configuration.SKILL / configuration.agents.adapter(selected['agent']).DEFAULTS),
+            'defaults': str(configuration.defaults_path()),
             'global_config': str(configuration.global_path()), 'worktree_config': str(repo / '.agr/config.ini'),
             'authentication': auth,
         }

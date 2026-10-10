@@ -232,13 +232,15 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(all(name.startswith('agent-review/') for name in names))
         self.assertFalse(any('__pycache__' in name or '.agr/' in name for name in names))
         self.assertIn('agent-review/scripts/install_skill.py', names)
-        for name in ('prompts/reviewer/policy.md', 'prompts/reviewer/followup.md', 'prompts/author/discuss.md', 'prompts/author/fix.md', 'presets/lenses/reviewer/review.md', 'defaults-codex.ini', 'codex-release.json', 'scripts/install_codex.py', 'scripts/agr/codex.py'):
+        for name in ('prompts/reviewer/policy.md', 'prompts/reviewer/followup.md', 'prompts/author/discuss.md', 'prompts/author/fix.md', 'presets/lenses/reviewer/review.md', 'defaults.ini', 'codex-release.json', 'scripts/install_codex.py', 'scripts/agr/codex.py'):
             self.assertIn('agent-review/' + name, names)
+        self.assertNotIn('agent-review/defaults-codex.ini', names)
         self.assertEqual((self.directory / 'first/install_skill.py').read_bytes(), (ROOT / 'skills/agent-review/scripts/install_skill.py').read_bytes())
         self.artifacts[installer.RELEASES + '/latest/download/release.json'] = (self.directory / 'first/release.json').read_bytes()
         self.artifacts[installer.RELEASES + '/download/v0.1.0/agent-review.tar.gz'] = archive.read_bytes()
         skill = self.install()
         self.assertIn('name: sst-agent-review\n', (skill / 'SKILL.md').read_text())
+        self.assertEqual((skill / 'defaults.ini').read_bytes(), (ROOT / 'skills/agent-review/defaults.ini').read_bytes())
         helper = self.home / '.agents/skills/sst-agent-review/scripts/review.py'
         repo = self.directory / 'project'
         subprocess.run(['git', 'init', '-q', str(repo)], check=True, capture_output=True)

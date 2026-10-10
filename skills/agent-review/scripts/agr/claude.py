@@ -7,7 +7,6 @@ import re
 from . import ReviewError, credentials, keychain
 
 
-DEFAULTS = 'defaults.ini'
 OPTIONS = ('model', 'effort', 'auth', 'credentials_file')
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 

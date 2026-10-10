@@ -67,7 +67,7 @@ For Claude Code, use `~/.claude/skills` instead. Manual copies do not auto-updat
 
 | File | Applies to |
 | --- | --- |
-| [Claude defaults](skills/agent-review/defaults.ini) or [Codex defaults](skills/agent-review/defaults-codex.ini) | Shipped defaults for the selected agent; replaced when the skill updates |
+| [defaults.ini](skills/agent-review/defaults.ini) | Shared review defaults and separate sections for both agents; replaced when the skill updates |
 | `~/.local/share/sst-agent-review/config.ini` | Your defaults for all projects |
 | `<worktree>/.agr/config.ini` | This worktree only; ignored by Git |
 
