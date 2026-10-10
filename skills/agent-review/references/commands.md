@@ -90,6 +90,19 @@ Each preset is a directory containing one nonempty UTF-8 file, `reviewer/review.
 
 Select `preset = lenses` in an INI file or use `prepare --preset lenses` for one run. Copy the default preset directory to customize criteria. The skill always loads policy, publication protocol, follow-up instructions and author discussion/fixing instructions from prompts/. Other files in legacy custom presets are ignored. The instructions command reads the common author prompt even if the configured review preset is unavailable. Prompt text is ordinary message content, without template interpolation. The selected CLI's built-in system prompt and runtime tool restrictions remain separate. Both bundled presets work with Claude and Codex.
 
+Prompt responsibilities are the same for both agents:
+
+| Source | Responsibility |
+| --- | --- |
+| Preset `reviewer/review.md` | Review criteria and method: independent or delegated analysis, perspectives, their focus and how to keep their analysis independent. |
+| Skill `prompts/reviewer/policy.md` | Repository instruction discovery, scope and tool restrictions, evidence checking, delegation permissions and transmission of common instructions to subagents. |
+| Skill `prompts/reviewer/protocol.md` | Drafts, severity grades, stable IDs, merged filenames, publication ownership, progress, recheck files, draft accounting, report and completion after subagents return or stop. |
+| Skill `prompts/reviewer/followup.md` | Interpreting history and human decisions, full/changes scope, rechecking affected findings and linking new evidence. |
+| Skill `prompts/author/discuss.md` and `fix.md` | Human-facing explanations and priorities, decisions and implementation of approved fixes. These are read by the author and are not sent as reviewer instructions. |
+| Generated run context | Task, reviewer identity, selected scope, source identifiers, paths and publication command. |
+
+A preset can select subagents and name their draft prefixes; the common policy supplies their shared instructions and the protocol governs their outputs. The main reviewer must account for every draft and wait for all launched subagents even with a custom delegating preset. Preset choices do not authorize the author to delegate fixes. Lens names and filename suffixes remain ordinary text, with no additional metadata fields or runtime interpretation. Changing a preset preserves these common rules. Prompt instructions do not replace the selected CLI's system prompt or prove runtime enforcement.
+
 Select a custom preset in the worktree's `.agr/config.ini`:
 
 ```ini
@@ -204,8 +217,10 @@ Keep source unchanged until review status becomes terminal. A successful report 
 Scoped verification, using fake reviewer processes and isolated tmux sockets, without model calls:
 
 ```sh
-python3 -m unittest tests.test_store tests.test_source tests.test_reporting tests.test_runner tests.test_tmux tests.test_cli tests.test_runtime tests.test_progress tests.test_configuration tests.test_flow tests.test_names tests.test_codex tests.test_credentials
+python3 -m unittest tests.test_store tests.test_source tests.test_reporting tests.test_runner tests.test_tmux tests.test_cli tests.test_runtime tests.test_progress tests.test_configuration tests.test_flow tests.test_names tests.test_codex tests.test_credentials tests.test_prompts
 ```
+
+Prompt assembly can be checked separately with `python3 -m unittest tests.test_prompts tests.test_configuration`. These fixtures prepare both agents with default, lenses and custom presets, preserve frozen prompts, check shared instructions and follow-up context, and never start a reviewer.
 
 Installer and release packaging checks are scoped separately: `python3 -m unittest tests.test_install`. They use temporary homes and local download fixtures, never the user's actual skill directories or a model. Build release assets with `python3 scripts/build_release.py v0.1.0 /new/output/directory`; it creates agent-review.tar.gz, release.json, install.sh and install_skill.py without publishing. Upload these assets together when creating a stable GitHub Release, keeping a published version immutable. The SHA-256 checks transfer integrity against the release manifest; it is not an independent signature.
 

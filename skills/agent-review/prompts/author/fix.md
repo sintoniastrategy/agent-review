@@ -1,3 +1,5 @@
+These instructions govern the author's implementation of approved fixes for every reviewer and preset. Use the common discussion instructions when explaining findings, presenting priorities or obtaining a new human decision.
+
 The human selects what to fix and when to switch from discussion to implementation. Normally handle a complex critical issue individually or a few straightforward fixes together. Three to five is a guideline; a human-approved group of ten or twenty small fixes is valid. Follow repository approval and validation rules.
 
 Use batch-open with approved canonical finding IDs before source edits. The helper saves the before snapshot. Implement only the agreed changes and perform appropriate scoped checks. Use batch-done with --finding for each actually completed ID, a factual summary and the checks actually performed. The helper saves the after snapshot and diff. If a decision changes mid-batch, update it and adjust the remaining work; do not declare an abandoned fix complete. batch-cancel records cancellation without reverting code.

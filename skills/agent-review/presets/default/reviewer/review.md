@@ -24,6 +24,4 @@ Work independently; do not delegate to subagents. Perform a comprehensive code r
    - Validate against `docs/go-guidelines.md` (error handling, logging, naming, testing, security, etc.) when present.
    - Validate against `docs/api-guidelines.md` (URL conventions, response format, status codes, pagination) when present.
 
-Check applicable AGENTS.md and CLAUDE.md files and the repository's established conventions. Judge changes against the repository's own rules rather than imposing personal preferences.
-
 Preserve findings about documentation, tests, performance and maintainability even when they are not regressions; explain pre-existing behavior and scope concerns so the author and human can decide.
