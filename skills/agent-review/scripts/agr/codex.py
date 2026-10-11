@@ -14,7 +14,7 @@ from . import ReviewError, read_json, credentials, keychain
 
 
 SKILL = Path(__file__).resolve().parents[2]
-RELEASE = read_json(SKILL / 'codex-release.json')
+RELEASE = read_json(SKILL / 'runtime-release.json')['codex']
 DOWNLOADS = 'https://github.com/openai/codex/releases/download/rust-v'
 OPTIONS = ('model', 'effort', 'auth', 'credentials_file')
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max', 'ultra')

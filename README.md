@@ -95,6 +95,8 @@ Shipped defaults are **Claude Opus, xhigh effort, full review, Docker**, as show
 
 Select Codex with `agent = codex` under `[review]`, or `prepare --agent codex` for one run. Its bundled defaults are **gpt-6.1-sol, xhigh effort**, using managed Codex CLI **0.160.0**. For example, add `[codex]` with `effort = medium` to keep that preference independently of Claude.
 
+[runtime-release.json](skills/agent-review/runtime-release.json) pins CLI versions, platform artifacts, sizes and SHA-256 checksums in separate `claude` and `codex` sections. Installers and Docker builds use this shared manifest.
+
 Authentication is agent-specific:
 
 | Section | `auth` choices | `auto` discovery |

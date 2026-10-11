@@ -1,7 +1,6 @@
 *
 !Dockerfile
 !runtime-release.json
-!codex-release.json
 !scripts/
 !scripts/**
 **/__pycache__/

@@ -18,7 +18,7 @@ import uuid
 RELEASES = 'https://github.com/sintoniastrategy/agent-review/releases'
 INSTALL_COMMAND = 'curl -fsSL ' + RELEASES + '/latest/download/install.sh | bash'
 INTERVAL = 24 * 60 * 60
-REQUIRED = ('SKILL.md', 'defaults.ini', 'runtime-release.json', 'codex-release.json', 'scripts/review.py', 'scripts/install_skill.py', 'scripts/install_codex.py', 'scripts/agr/codex.py')
+REQUIRED = ('SKILL.md', 'defaults.ini', 'runtime-release.json', 'scripts/review.py', 'scripts/install_skill.py', 'scripts/install_codex.py', 'scripts/agr/codex.py')
 
 
 def download(url, destination):

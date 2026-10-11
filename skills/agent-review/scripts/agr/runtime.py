@@ -21,7 +21,7 @@ from .store import local_directory
 
 SKILL = Path(__file__).resolve().parents[2]
 ENTRY = SKILL / "scripts" / "review.py"
-RELEASE = read_json(SKILL / "runtime-release.json")
+RELEASE = read_json(SKILL / "runtime-release.json")['claude']
 DOWNLOADS = "https://downloads.claude.ai/claude-code-releases"
 CONTAINER_CREDENTIALS = "/run/agr/credentials.json"
 
@@ -152,7 +152,7 @@ def checked(args, **kwargs):
 
 def image_tag(agent='claude'):
     release = codex.RELEASE if agent == 'codex' else RELEASE
-    paths = [SKILL / "Dockerfile", SKILL / ".dockerignore", SKILL / "runtime-release.json", SKILL / 'codex-release.json']
+    paths = [SKILL / "Dockerfile", SKILL / ".dockerignore", SKILL / "runtime-release.json"]
     paths += sorted((SKILL / "scripts").rglob("*.py"))
     value = hashlib.sha256()
     for path in paths:

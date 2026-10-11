@@ -182,7 +182,7 @@ class CodexRuntimeTests(RepositoryTest):
         command = reviewer_command(record, self.journal.round_directory(record['id']))
         self.assertIn('--dangerously-bypass-approvals-and-sandbox', command)
         self.assertNotIn('--sandbox', command)
-        self.assertIn('!codex-release.json', (runtime.SKILL / '.dockerignore').read_text().splitlines())
+        self.assertIn('!runtime-release.json', (runtime.SKILL / '.dockerignore').read_text().splitlines())
 
 
 class CodexInstallerTests(RepositoryTest):
