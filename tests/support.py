@@ -15,11 +15,11 @@ sys.path.insert(0, str(SCRIPTS))
 
 from agr.prompts import prepare
 from agr.store import Journal
-from agr import runtime
+from agr import runtime, codex, configuration
 
 
-def fake_launcher(scenario="success"):
-    return [sys.executable, str(ROOT / "tests" / "fake_claude.py"), scenario]
+def fake_launcher(scenario="success", agent='claude'):
+    return [sys.executable, str(ROOT / 'tests' / ('fake_' + agent + '.py')), scenario]
 
 
 def until(predicate, timeout=10):
@@ -44,6 +44,7 @@ class RepositoryTest(unittest.TestCase):
         clean = {key: value for key, value in os.environ.items() if key not in {
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+            'OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_ENDPOINT', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
             "GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE",
         }}
         clean['HOME'] = str(home)
@@ -67,21 +68,29 @@ class RepositoryTest(unittest.TestCase):
     def write_settings(self, values, path=None):
         path = path or self.repo / '.agr/config.ini'
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('[review]\n' + ''.join(key + ' = ' + str(value) + '\n' for key, value in values.items()), encoding='utf-8')
+        common = {key: value for key, value in values.items() if not isinstance(value, dict)}
+        sections = {'review': common, **{key: value for key, value in values.items() if isinstance(value, dict)}}
+        path.write_text('\n'.join('[' + section + ']\n' + ''.join(key + ' = ' + str(value) + '\n' for key, value in options.items()) for section, options in sections.items()), encoding='utf-8')
         return path
 
     def prepared(self, scenario="success", **options):
-        return prepare(self.journal, self.fake_runtime(scenario), **options)
+        agent = options.get('agent') or configuration.effective(self.repo)['agent']
+        return prepare(self.journal, self.fake_runtime(scenario, agent=agent), **options)
 
-    def fake_runtime(self, scenario="success"):
-        directory = self.repo / ".agr" / "fixtures" / scenario
+    def fake_runtime(self, scenario="success", agent='claude'):
+        directory = self.repo / ".agr" / "fixtures" / scenario / agent
         directory.mkdir(parents=True, exist_ok=True)
-        binary = directory / "claude"
-        binary.write_text("#!" + sys.executable + "\nimport runpy\nimport sys\nsys.argv[1:1] = [" + repr(scenario) + "]\nrunpy.run_path(" + repr(str(ROOT / "tests" / "fake_claude.py")) + ", run_name='__main__')\n")
+        binary = directory / 'package/bin/codex' if agent == 'codex' else directory / agent
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("#!" + sys.executable + "\nimport runpy\nimport sys\nsys.argv[1:1] = [" + repr(scenario) + "]\nrunpy.run_path(" + repr(str(ROOT / 'tests' / ('fake_' + agent + '.py'))) + ", run_name='__main__')\n")
         binary.chmod(0o700)
         credentials = directory / "credentials.json"
         credentials.write_text(json.dumps({"test_only": True}))
-        return {"mode": "native", "version": runtime.RELEASE["version"], "credentials_file": str(credentials), "window_name": "test/feature", "executable": str(binary), "sha256": runtime.digest(binary), "python": sys.executable, "entry": str(SCRIPTS / "review.py")}
+        version = codex.RELEASE['version'] if agent == 'codex' else runtime.RELEASE['version']
+        managed = {"mode": "native", 'agent': agent, "version": version, "credentials_file": str(credentials), "window_name": "test/feature", "executable": str(binary), "sha256": runtime.digest(binary), "python": sys.executable, "entry": str(SCRIPTS / "review.py")}
+        if agent == 'codex':
+            managed['package_sha256'] = codex.package_digest(binary.parent.parent)
+        return managed
 
     def fake_docker_client(self):
         return {'command': ['/test-only/docker', '--host', 'unix:///test-only/docker.sock'], 'environment': {'HOME': str(self.repo), 'PATH': os.defpath}, 'endpoint': 'unix:///test-only/docker.sock', 'context': 'test'}

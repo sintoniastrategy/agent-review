@@ -232,16 +232,22 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(all(name.startswith('agent-review/') for name in names))
         self.assertFalse(any('__pycache__' in name or '.agr/' in name for name in names))
         self.assertIn('agent-review/scripts/install_skill.py', names)
+        for name in ('prompts/reviewer/policy.md', 'prompts/reviewer/followup.md', 'prompts/author/discuss.md', 'prompts/author/fix.md', 'presets/lenses/reviewer/review.md', 'defaults.ini', 'runtime-release.json', 'scripts/install_codex.py', 'scripts/agr/codex.py'):
+            self.assertIn('agent-review/' + name, names)
+        self.assertNotIn('agent-review/defaults-codex.ini', names)
+        self.assertNotIn('agent-review/codex-release.json', names)
         self.assertEqual((self.directory / 'first/install_skill.py').read_bytes(), (ROOT / 'skills/agent-review/scripts/install_skill.py').read_bytes())
         self.artifacts[installer.RELEASES + '/latest/download/release.json'] = (self.directory / 'first/release.json').read_bytes()
         self.artifacts[installer.RELEASES + '/download/v0.1.0/agent-review.tar.gz'] = archive.read_bytes()
         skill = self.install()
         self.assertIn('name: sst-agent-review\n', (skill / 'SKILL.md').read_text())
+        self.assertEqual((skill / 'defaults.ini').read_bytes(), (ROOT / 'skills/agent-review/defaults.ini').read_bytes())
+        self.assertEqual((skill / 'runtime-release.json').read_bytes(), (ROOT / 'skills/agent-review/runtime-release.json').read_bytes())
         helper = self.home / '.agents/skills/sst-agent-review/scripts/review.py'
         repo = self.directory / 'project'
         subprocess.run(['git', 'init', '-q', str(repo)], check=True, capture_output=True)
         preset = self.directory / 'custom-preset'
-        for name in ('reviewer/review.md', 'reviewer/policy.md', 'reviewer/followup.md', 'author/discuss.md', 'author/fix.md'):
+        for name in ('reviewer/review.md', 'author/discuss.md'):
             path = preset / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('Installed custom instructions: ' + name + '\n')
@@ -251,7 +257,8 @@ class InstallTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(helper), '--repo', str(repo), 'instructions', 'discuss'],
                                 env={**os.environ, 'HOME': str(self.home)}, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Installed custom instructions: author/discuss.md', result.stdout)
+        self.assertEqual(result.stdout.strip(), (skill / 'prompts/author/discuss.md').read_text().strip())
+        self.assertNotIn('Installed custom instructions', result.stdout)
         self.assertEqual(config.read_text(), original)
 
     def test_bootstrap_forwards_arguments_and_cleans_failed_download(self):

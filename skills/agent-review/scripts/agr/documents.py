@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 
 from . import ReviewError
-from . import names
+from . import names, priorities
 
 
 TEXT_FIELDS = {
@@ -69,9 +69,8 @@ def read_document(path):
     try:
         if path.parent.name in {'findings', 'imports'}:
             result = draft(path, 'finding', published=True)
-            names.parse_finding(path.stem)
-            result.update(id=path.stem, created_at=result.get('at', ''))
-            result.setdefault('severity', 'unclassified')
+            result.update(id=names.finding_file_id(path.stem), created_at=result.get('at', ''))
+            result.setdefault('severity', 'PZ')
             result.setdefault('title', result['body'].splitlines()[0][:160])
             return result
         if path.parent.name == 'checks':
@@ -171,7 +170,7 @@ def validate_finding(values):
                 raise ReviewError(key + ' must be a positive integer')
         elif not isinstance(value, str) or not value.strip():
             raise ReviewError(key + ' must be nonempty text')
-    if values.get('severity', 'unclassified') not in {'P0', 'P1', 'P2', 'P3', 'info', 'unclassified'}:
+    if values.get('severity', 'PZ') not in priorities.VALUES:
         raise ReviewError('Invalid severity')
     if 'path' in values:
         path = Path(values['path'])

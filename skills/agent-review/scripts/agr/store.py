@@ -4,11 +4,10 @@ import uuid
 
 from . import ReviewError, now, read_json, write_json
 from .documents import locked, read_document, write_document, validate_finding
-from . import names
+from . import names, priorities
 
 
 ACTIVE = {"preparing", "prepared", "starting", "running", "cancelling"}
-PRIORITIES = {value: rank for rank, value in enumerate(("P0", "P1", "P2", "P3", "info", "unclassified"))}
 
 
 def local_directory(repo):
@@ -105,9 +104,11 @@ class Journal:
                 status = event["status"]
         return status
 
-    def new_round(self, source, runtime, model=None, effort=None, parallel_with=None, preset=None, scope="full"):
+    def new_round(self, source, runtime, model=None, effort=None, parallel_with=None, preset=None, scope="full", agent="claude"):
         if not isinstance(runtime, dict) or runtime.get("mode") not in {"docker", "native"}:
             raise ReviewError("Prepare a managed docker or native runtime")
+        if agent not in {'claude', 'codex'} or runtime.get('agent', 'claude') != agent:
+            raise ReviewError('Selected agent does not match its prepared runtime')
         with self.access(True) as access:
             if self.state(access) != "active":
                 raise ReviewError("Session is stopped; reopen it explicitly")
@@ -121,12 +122,12 @@ class Journal:
                 raise ReviewError('Parallel anchor must still be active')
             number = len(rounds) + 1
             data = {
-                "id": number, "reviewer": "claude", "status": "preparing", "created_at": now(),
+                "id": number, "reviewer": agent, "status": "preparing", "created_at": now(),
                 "source": source, "runtime": runtime, "model": model, "effort": effort, "preset": preset, "scope": scope,
                 "session_id": str(uuid.uuid4()), "cancel_requested": False,
             }
             data['pass'] = anchor['pass'] if anchor else max((item.get('pass', item['id']) for item in rounds), default=0) + 1
-            data['slot'] = 1 + sum(item.get('pass') == data['pass'] for item in rounds)
+            data['slot'] = 1 + sum(item.get('pass') == data['pass'] and item['reviewer'] == agent for item in rounds)
             data['directory'] = names.round_name(data)
             write_json(self.directory / 'rounds' / data['directory'] / 'status.json', data)
             return data
@@ -162,7 +163,7 @@ class Journal:
                 return item
         raise ReviewError("Unknown finding: " + str(finding))
 
-    def add_finding(self, number, values, imported=None):
+    def add_finding(self, number, values, imported=None, draft_name='finding'):
         validate_finding(values)
         body = values.get("body", "")
         if not isinstance(body, str) or not body.strip():
@@ -177,16 +178,16 @@ class Journal:
             data = {**values, "round": number, "reviewer": "claude", "at": now()}
             if imported is not None:
                 data['imported_by_author'] = imported
-            data.setdefault("severity", "unclassified")
+            data.setdefault("severity", "PZ")
             data.setdefault("title", body.splitlines()[0][:160])
             record = self.round(number, access)
             root = self.directory / 'rounds' / record['directory']
             directory = root / 'imports' if imported is not None else root / 'output' / 'findings'
             with locked(root / 'output' / '.lock'):
                 existing = list((root / 'imports').glob('*.md')) + list((root / 'output' / 'findings').glob('*.md'))
-                index = max((names.parse_finding(path.stem)[3] for path in existing), default=0) + 1
+                index = max((names.parse_finding(names.finding_file_id(path.stem))[3] for path in existing), default=0) + 1
                 data['id'] = names.finding(names.round_name(record), index)
-                path = directory / (data['id'] + '.md')
+                path = directory / names.finding_filename(data['id'], data['severity'], draft_name)
                 write_document(path, data)
             return {**read_document(path), 'round': number, 'reviewer': 'claude'}
 
@@ -216,7 +217,7 @@ class Journal:
         events = self.rows("events", access)
         for item in findings:
             item["decision"] = "pending"
-            item["priority"] = item["severity"]
+            item["priority"] = priorities.canonical(item["severity"])
             item["fixes"] = []
             item["verifications"] = []
             for event in events:
@@ -227,7 +228,7 @@ class Journal:
                     item["decision"] = event["action"]
                     item["reason"] = event["reason"]
                 elif kind == "assessment":
-                    item["priority"] = event["priority"]
+                    item["priority"] = priorities.canonical(event["priority"])
                     item["assessment"] = event
                 elif kind == "fixed" or (kind == "batch_done" and item["id"] in event.get("findings", [])):
                     item["fix"] = event
@@ -235,14 +236,14 @@ class Journal:
                 elif kind == "verification":
                     item["verification"] = event
                     item["verifications"].append(event)
-        return sorted(findings, key=lambda item: (PRIORITIES.get(item["priority"], 5), item["id"]))
+        return sorted(findings, key=lambda item: (priorities.rank(item["priority"]), names.parse_finding(item["id"])))
 
     def author_event(self, kind, **values):
         with self.access(True) as access:
             self.require_finding(access, values["finding"])
             if kind == "decision" and values["action"] not in {"fix", "reject", "defer", "pending"}:
                 raise ReviewError("Unknown decision")
-            if kind == "assessment" and values["priority"] not in PRIORITIES:
+            if kind == "assessment" and values["priority"] not in priorities.VALUES:
                 raise ReviewError("Unknown priority")
             if not values.get("reason", "").strip():
                 raise ReviewError("A reason is required")

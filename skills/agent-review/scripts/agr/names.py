@@ -1,6 +1,6 @@
 import re
 
-from . import ReviewError
+from . import ReviewError, priorities
 
 
 def reviewer(pass_number, agent, slot):
@@ -38,3 +38,23 @@ def parse_finding(value):
         if finding(prefix, int(number)) == value:
             return (*identity, int(number))
     raise ReviewError('Use a finding ID such as r03-claude1-f015')
+
+
+def finding_file_id(stem):
+    identifier, separator, suffix = stem.partition('--')
+    parse_finding(identifier)
+    if separator and not re.fullmatch(r'p[0-4Z]--[A-Za-z0-9_-]+', suffix):
+        raise ReviewError('Invalid finding filename: ' + stem)
+    return identifier
+
+
+def finding_filename(identifier, severity, draft_name):
+    parse_finding(identifier)
+    severity = priorities.canonical(severity)
+    if severity not in priorities.LABELS:
+        raise ReviewError('Invalid severity')
+    suffix = re.sub(r'[^A-Za-z0-9_-]', '-', draft_name) or 'finding'
+    filename = identifier + '--p' + severity[1:] + '--' + suffix + '.md'
+    if len(filename) > 255:
+        raise ReviewError('Draft name is too long for a published filename; choose a shorter draft name')
+    return filename

@@ -16,12 +16,12 @@ The skill checks prerequisites, explains each step and recommends what to do nex
 
 ## How it works
 
-1. **Review.** A fresh interactive Claude session runs in tmux and reviews your branch changes, including uncommitted work, against your chosen base.
+1. **Review.** A fresh interactive Claude or Codex session runs in tmux and reviews your branch changes, including uncommitted work, against your chosen base.
 2. **Discuss.** Your existing coding agent keeps the task context. It walks through critical/high findings individually and presents medium/low findings in tables with recommendations.
 3. **Choose and fix.** Approve, skip or defer findings. Change your mind whenever needed. Your coding agent fixes the approved items in suitable batches.
 4. **Check again.** When you request another pass, the reviewer gets previous findings, your decisions and the fix diffs. Recorded fixes and reviewer confirmations remain separate.
 
-Stop whenever you've fixed enough. Findings, decisions and rechecks stay in readable Markdown files under `.agr/`. No PR, GitHub Actions, MCP server or database required. Orchestration runs locally; Claude inference still uses Anthropic's service.
+Stop whenever you've fixed enough. Findings, decisions and rechecks stay in readable Markdown files under `.agr/`. No PR, GitHub Actions, MCP server or database required. Orchestration runs locally; inference uses the selected provider's service.
 
 ## Which review tool should I use?
 
@@ -44,10 +44,11 @@ For a small, one-off review, the built-in option is simpler. SST earns its extra
 
 The command above installs the latest release into `~/.local/share/sst-agent-review`, with skill symlinks in `~/.agents/skills/sst-agent-review` and `~/.claude/skills/sst-agent-review`.
 
-You'll need **curl, Python 3.9+, Git, tmux and an existing Claude subscription login**. The skill manages its own pinned Claude binary and clean configuration. Prerequisites are checked, not installed automatically.
+You'll need **curl, Python 3.9+, Git, tmux and a Claude subscription or Codex ChatGPT login** for the selected reviewer. The skill manages its own pinned CLI and clean configuration. Prerequisites are checked, not installed automatically.
 
-- **Docker is the default:** local Linux Docker Engine, rootless or rootful, with source mounted read-only. Podman and userns-remap are unsupported.
-- **Native mode is optional:** ask for it on Linux or macOS. Native macOS uses your default Claude Code Keychain login; Docker and native Linux use a credentials file. Native sandboxing is best effort and may fall back to your user permissions. Full macOS validation is still pending.
+- **Docker is the default on Linux and macOS.** Docker requires a local Linux Docker Engine, rootless or rootful, with source mounted read-only. Podman and userns-remap are unsupported.
+- **Existing CLI logins are reused:** credential files or the default macOS Keychain entries. Both Docker agents use the same host bridge: a private temporary credential file with refresh synchronized back to Keychain. macOS may request Keychain access approval on first use. Full macOS validation is still pending.
+- **Native mode is retained but has not passed release validation.** Its isolation depends on the agent: Claude's Bash sandbox is best effort and may fall back to your user permissions. Codex requests its built-in sandbox without an unsandboxed retry.
 
 Updates are checked on skill invocation at most once daily. New invocations use the updated version; running workflows retain theirs. If updating is blocked, the skill explains how to run the install command manually.
 
@@ -66,7 +67,7 @@ For Claude Code, use `~/.claude/skills` instead. Manual copies do not auto-updat
 
 | File | Applies to |
 | --- | --- |
-| [Bundled `defaults.ini`](skills/agent-review/defaults.ini) | Shipped defaults; replaced when the skill updates |
+| [defaults.ini](skills/agent-review/defaults.ini) | Shared review defaults and separate sections for both agents; replaced when the skill updates |
 | `~/.local/share/sst-agent-review/config.ini` | Your defaults for all projects |
 | `<worktree>/.agr/config.ini` | This worktree only; ignored by Git |
 
@@ -74,22 +75,38 @@ For example, put this in your personal file to use Sonnet with Docker:
 
 ```ini
 [review]
+runtime = docker
+
+[claude]
 model = sonnet
 effort = medium
-runtime = docker
 ```
 
-To use native mode in one project, put this in its `.agr/config.ini`:
+To select Codex in one project, put this in its `.agr/config.ini`:
 
 ```ini
 [review]
-runtime = native
-auth = auto
+agent = codex
 ```
 
-Model and effort still inherit from your personal file. `auth = auto` uses the default Keychain login on native macOS, otherwise a credentials file. Set `credentials_file = /absolute/path/to/credentials.json` to choose a file explicitly. Delete a key to inherit it again.
+Model and effort inherit from the selected agent's personal section. `[review]` holds `agent`, `preset`, `scope`, `runtime` and `window_name`. `[claude]` and `[codex]` each hold their own `model`, `effort`, `auth` and `credentials_file`. Delete a key to inherit it again. Claude settings never become Codex settings when switching agents.
 
-All supported keys are in [defaults.ini](skills/agent-review/defaults.ini): `agent`, `model`, `effort`, `preset`, `scope`, `runtime`, `auth`, `credentials_file`, `window_name`. Shipped defaults are **Claude Opus, xhigh effort, full review, Docker**. Only Claude can be launched as reviewer; Codex can be your author agent. There is no `configure` command.
+Shipped defaults are **Claude Opus, xhigh effort, full review, Docker**, as shown in [defaults.ini](skills/agent-review/defaults.ini). There is no `configure` command. Legacy agent settings under `[review]` remain readable: they belong to the agent selected at that configuration layer, inheriting the preceding layer's agent or Claude. A CLI agent override does not transfer them to another agent. Explicit agent sections take precedence over legacy keys in the same file.
+
+Select Codex with `agent = codex` under `[review]`, or `prepare --agent codex` for one run. Its bundled defaults are **gpt-6.1-sol, xhigh effort**, using managed Codex CLI **0.160.0**. For example, add `[codex]` with `effort = medium` to keep that preference independently of Claude.
+
+[runtime-release.json](skills/agent-review/runtime-release.json) pins CLI versions, platform artifacts, sizes and SHA-256 checksums in separate `claude` and `codex` sections. Installers and Docker builds use this shared manifest.
+
+Authentication is agent-specific:
+
+| Section | `auth` choices | `auto` discovery |
+| --- | --- | --- |
+| `[claude]` | `auto`, `file`, `keychain` | Explicit `credentials_file`; otherwise default macOS Keychain if present; otherwise `$CLAUDE_CONFIG_DIR/.credentials.json` or `~/.claude/.credentials.json` |
+| `[codex]` | `auto`, `file`, `keyring` | Explicit `credentials_file`; otherwise `$CODEX_HOME/auth.json` or `~/.codex/auth.json` if present; otherwise that home's macOS Keychain entry |
+
+Explicit Keychain/keyring authentication requires macOS. Custom Claude Keychain profiles are not discovered. Codex `auto` prefers an existing file without reading your Codex config; use `[codex] auth = keyring` to select Keychain explicitly when both exist. The managed CLI checks subscription/ChatGPT authentication before inference; API-key fallback is refused.
+
+The Keychain bridge stores credentials under `~/.local/share/sst-agent-review/credentials/`, outside the mounted project, with private directories (`0700`) and files (`0600`). Each container receives only its own credential file. A shared lock for each Keychain item serializes bridge updates across journals and worktrees. The bridge synchronizes refreshed tokens and deletes the temporary file after successful session closure. A detected conflicting login or synchronization error retains the private file and reports its path for recovery. Credentials are never included in prompts or command arguments.
 
 Ask the skill to check settings, or run this from the worktree with your actual local base:
 
@@ -97,10 +114,24 @@ Ask the skill to check settings, or run this from the worktree with your actual 
 python3 ~/.local/share/sst-agent-review/current/agent-review/scripts/review.py preflight --base main --human
 ```
 
-It shows effective settings and checks prerequisites without starting a reviewer. Preparation flags can override model, effort, preset and scope for one run. Existing prepared rounds retain their settings.
+It shows effective settings and checks prerequisites without starting a reviewer. Both `preflight` and `prepare` accept overrides for agent, model, effort, preset, scope and runtime; use matching flags for the intended run. Preparation repeats tool and credential checks before setting up the runtime. Existing prepared rounds retain their settings. Claude and Codex can share an explicitly requested parallel pass, with separate IDs such as `r02-claude1` and `r02-codex1`.
+
+To explicitly test both real Docker runtimes, including interactive startup, command execution, publication and cleanup, run:
+
+```sh
+python3 ~/.local/share/sst-agent-review/current/agent-review/scripts/smoke.py --repo . --agent both --runtime docker --effort medium
+```
+
+This starts real model sessions, saves separate artifacts under `.agr/.cache/smoke-*`, and preserves the existing review cycle. Use `--agent claude` or `--agent codex` for one agent. Failed runs are retained without automatic retry.
 
 **Upgrading from JSON configuration:** convert each `config.json` to `config.ini` at the same location. Write `[review]`, then one `key = value` per line, without JSON braces, commas or quotes. A legacy file without an INI replacement produces a migration error. Once the INI exists, only it is used. Review journal files are unaffected.
 
-[Prompt presets](skills/agent-review/presets/default) separate review criteria, reviewer policy, follow-ups, discussion and fixes. Keep custom presets outside the managed installation; set `preset = /absolute/path/to/your/preset` in your INI. Personal and worktree settings survive updates.
+Prompt presets define only what to review and how. [default](skills/agent-review/presets/default/reviewer/review.md) is an independent comprehensive review. [lenses](skills/agent-review/presets/lenses/reviewer/review.md) delegates three independent perspectives: regressions, repository style and rules, and comprehensive review. Subagents save finding drafts; the main reviewer checks evidence, reconciles duplicates and publishes one set of results. Select it with `preset = lenses` in your INI or `prepare --preset lenses` for one run. `default` remains the default.
+
+Reviewer policy, publication, follow-ups, discussion and fixing instructions come from the skill and cannot be replaced by a preset. The common policy requires reading repository instructions and governs delegation and evidence checking. The common protocol owns priorities, draft and finding formats, merged names, accounting for every draft and waiting for subagents before completion. Author prompts govern discussion and approved fixes separately. These instructions are shared by Claude and Codex; changing the preset changes the review criteria and method while preserving the workflow. See the [prompt responsibilities](skills/agent-review/references/commands.md).
+
+Custom presets need only `reviewer/review.md`; other files in older presets are ignored. Keep custom presets outside the managed installation and set `preset = /absolute/path/to/your/preset`. Personal and worktree settings survive updates, and prepared reviews retain their frozen prompts.
+
+Published filenames look like `r02-claude1-f032--p1--regression-timeout.md`: stable ID, original reviewer severity, and final draft name. A merged finding may keep one source draft name or join names with hyphens. The helper treats that name as opaque text. Human output sorts by priority and shows **crit, high, med, low, info, undef** for P0, P1, P2, P3, P4, PZ; missing severity is undef. Old filenames and the legacy severities `info` and `unclassified` remain readable.
 
 [Skill instructions](skills/agent-review/SKILL.md) | [Commands, configuration and recovery](skills/agent-review/references/commands.md)

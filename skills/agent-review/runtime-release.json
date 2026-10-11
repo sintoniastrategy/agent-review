@@ -1,35 +1,66 @@
 {
-  "version": "2.1.284",
-  "platforms": {
-    "darwin-arm64": {
-      "binary": "claude",
-      "checksum": "50a14c2f50f56668380fdda490167f1d3630d5cc18fb8aed3073c2c7ea7314fe",
-      "size": 226563088
-    },
-    "darwin-x64": {
-      "binary": "claude",
-      "checksum": "79441b868935a11ed0630b2ee59327eda9f6a93bb8d470bd6633c03df76d2135",
-      "size": 235010944
-    },
-    "linux-arm64": {
-      "binary": "claude",
-      "checksum": "3dd0f96d7ada463152d20300186f6cfc6ab94b57e218f49e3ac86db42ac695a6",
-      "size": 242409464
-    },
-    "linux-x64": {
-      "binary": "claude",
-      "checksum": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
-      "size": 243059896
-    },
-    "linux-arm64-musl": {
-      "binary": "claude",
-      "checksum": "d8bce5724ecd1e6930ddf5f4cef7cebb0cd3e50b4f5d5158b30a53f81824f982",
-      "size": 234764096
-    },
-    "linux-x64-musl": {
-      "binary": "claude",
-      "checksum": "1c5e4d7431c1e70c45efdce69ea74c2c9a2ad309f16555f7dc563f4743d978a0",
-      "size": 236810328
+  "claude": {
+    "version": "2.1.284",
+    "platforms": {
+      "darwin-arm64": {
+        "binary": "claude",
+        "checksum": "50a14c2f50f56668380fdda490167f1d3630d5cc18fb8aed3073c2c7ea7314fe",
+        "size": 226563088
+      },
+      "darwin-x64": {
+        "binary": "claude",
+        "checksum": "79441b868935a11ed0630b2ee59327eda9f6a93bb8d470bd6633c03df76d2135",
+        "size": 235010944
+      },
+      "linux-arm64": {
+        "binary": "claude",
+        "checksum": "3dd0f96d7ada463152d20300186f6cfc6ab94b57e218f49e3ac86db42ac695a6",
+        "size": 242409464
+      },
+      "linux-x64": {
+        "binary": "claude",
+        "checksum": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+        "size": 243059896
+      },
+      "linux-arm64-musl": {
+        "binary": "claude",
+        "checksum": "d8bce5724ecd1e6930ddf5f4cef7cebb0cd3e50b4f5d5158b30a53f81824f982",
+        "size": 234764096
+      },
+      "linux-x64-musl": {
+        "binary": "claude",
+        "checksum": "1c5e4d7431c1e70c45efdce69ea74c2c9a2ad309f16555f7dc563f4743d978a0",
+        "size": 236810328
+      }
+    }
+  },
+  "codex": {
+    "version": "0.160.0",
+    "platforms": {
+      "darwin-arm64": {
+        "archive": "codex-package-aarch64-apple-darwin.tar.gz",
+        "target": "aarch64-apple-darwin",
+        "checksum": "007df41b607dbbc8d204b9746ce7fed2d4ce6c813f44c32ceee54175ca796525",
+        "size": 129976298
+      },
+      "darwin-x64": {
+        "archive": "codex-package-x86_64-apple-darwin.tar.gz",
+        "target": "x86_64-apple-darwin",
+        "checksum": "4d50514b2d8acd81ca8cfee55b667b3dc4f7681b65bf3299ff06b11a064f8861",
+        "size": 141304442
+      },
+      "linux-arm64": {
+        "archive": "codex-package-aarch64-unknown-linux-musl.tar.gz",
+        "target": "aarch64-unknown-linux-musl",
+        "checksum": "7f0fe42ff22ecfa3a47bc4a34f5b22c4218b431a4ec0aba51c7d98299f07900c",
+        "size": 150934664
+      },
+      "linux-x64": {
+        "archive": "codex-package-x86_64-unknown-linux-musl.tar.gz",
+        "target": "x86_64-unknown-linux-musl",
+        "checksum": "4fcc47ab57f52ff75363951a8761146cd10c8288bd86fed45487dbb204a16b71",
+        "size": 160727443
+      }
     }
   }
 }

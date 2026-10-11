@@ -6,7 +6,7 @@ import time
 from collections import Counter, defaultdict
 
 from .store import ACTIVE
-from . import tmux
+from . import tmux, priorities
 from .names import parse_finding, round_name
 
 
@@ -18,7 +18,6 @@ RECHECKS = {
     'not_checked': 'Not rechecked', 'resolved': 'Confirmed resolved',
     'still_present': 'Still present', 'changed': 'Changed', 'uncertain': 'Uncertain',
 }
-PRIORITY_LABELS = {'P0': 'Crit', 'P1': 'High', 'P2': 'Med', 'P3': 'Low', 'info': 'Info', 'unclassified': 'Unclassified'}
 
 
 def finding_label(identifier, mixed=False):
@@ -71,9 +70,9 @@ def summary(value):
     record = value['record']
     phase = record['status']
     if phase == 'running':
-        phase += ' (reviewing)' if record.get('prompt_sent_at') else ' (waiting for Claude prompt)'
+        phase += ' (reviewing)' if record.get('prompt_sent_at') else ' (waiting for ' + record['reviewer'].capitalize() + ' prompt)'
     elif phase == 'completed' and record.get('session_open'):
-        phase += ' (Claude session open)'
+        phase += ' (' + record['reviewer'].capitalize() + ' session open)'
     label = round_name(record)
     lines = ['%s | %s | findings: %d | rechecks: %d | report: %s' % (label, phase, value['findings'], value['checks'], 'saved' if value['report'] else 'pending')]
     lines.append('Model: %s | effort: %s | preset: %s' % tuple(clean(record.get(key) or 'not recorded') for key in ('model', 'effort', 'preset')))
@@ -130,8 +129,8 @@ def finding_summary(items, rounds):
     for state, label in DECISIONS.items():
         lines.append('  %s: %d' % (label, decisions[state]))
     lines.append('  Fix recorded (independent of current decision): %d' % sum(bool(item.get('fix')) for item in items))
-    priorities = Counter(item['priority'] for item in items)
-    lines.append('Priorities: ' + ', '.join('%s: %d' % (label, priorities[value]) for value, label in PRIORITY_LABELS.items()))
+    counts = Counter(priorities.canonical(item['priority']) for item in items)
+    lines.append('Priorities: ' + ', '.join('%s: %d' % (label, counts[value]) for value, label in priorities.LABELS.items()))
     lines += ['', 'Latest recorded reviewer recheck (one per finding):']
     for state, label in RECHECKS.items():
         source = ', '.join('r%02d: %d' % (number, count) for number, count in sorted(origins[state].items()))
@@ -150,7 +149,7 @@ def findings(items, detail=False):
         lines.append('Reviewer: %s %d' % (agent.capitalize(), slot))
     for item, (number, agent, slot, index) in zip(items, identities):
         label = finding_label(item['id'], len(reviewers) > 1)
-        lines.append('%s (P:%s) | %s | %s' % (label, PRIORITY_LABELS[item['priority']], item['decision'], clean(item['title'])))
+        lines.append('%s (P:%s) | %s | %s' % (label, priorities.label(item['priority']), item['decision'], clean(item['title'])))
         if detail:
             lines += ['ID: ' + item['id'], item['body'], 'Decision: ' + item.get('reason', 'Not discussed')]
             if item.get('verification'):
@@ -161,7 +160,7 @@ def findings(items, detail=False):
 def finding_table(items, rounds, width=None):
     if not items:
         return 'No findings.'
-    ordered = sorted(items, key=lambda item: parse_finding(item['id']))
+    ordered = sorted(items, key=lambda item: (priorities.rank(item['priority']), parse_finding(item['id'])))
     identities = [parse_finding(item['id']) for item in ordered]
     reviewers = {(agent, slot) for _, agent, slot, _ in identities}
     mixed = len(reviewers) > 1
@@ -173,7 +172,7 @@ def finding_table(items, rounds, width=None):
         state = check['status'] if check else 'not_checked'
         assessment = item.get('assessment', {})
         rows.append([finding_label(item['id'], mixed),
-            PRIORITY_LABELS[item['priority']], clean(item['title'], limit=None), assessment.get('recommendation') or 'Not assessed',
+            priorities.label(item['priority']), clean(item['title'], limit=None), assessment.get('recommendation') or 'Not assessed',
             clean(assessment.get('reason', '-'), limit=None), DECISIONS[item['decision']], 'Yes' if item.get('fix') else 'No',
             RECHECKS[state], 'r%02d' % passes[check['round']] if check else '-',
         ])

@@ -42,6 +42,29 @@ class ProgressTests(RepositoryTest):
     def test_finding_table_handles_empty_queue(self):
         self.assertEqual(progress.finding_table([], []), 'No findings.')
 
+    def test_human_output_orders_priorities_and_translates_every_grade(self):
+        values = ('PZ', 'P4', 'P3', 'P2', 'P1', 'P0')
+        number = self.running()
+        for severity in values:
+            self.journal.add_finding(number, {'body': severity + ' evidence', 'severity': severity})
+        items = self.journal.findings()
+        labels = ('crit', 'high', 'med', 'low', 'info', 'undef')
+        text = progress.finding_table(list(reversed(items)), self.journal.rows('rounds'))
+        rows = [[cell.strip() for cell in line.split('|')[1:-1]] for line in text.splitlines() if line.startswith('| R')]
+        self.assertEqual([row[1] for row in rows], list(labels))
+        listing = progress.findings(items)
+        for label in labels:
+            self.assertIn('(P:' + label + ')', listing)
+            self.assertIn(label + ': 1', progress.status(self.journal))
+        for item in items:
+            if item['priority'] == 'P4':
+                item['priority'] = 'info'
+            elif item['priority'] == 'PZ':
+                item['priority'] = 'unclassified'
+        self.assertEqual(progress.findings(items), listing)
+        summary = progress.finding_summary(items, self.journal.rows('rounds'))
+        self.assertIn('info: 1, undef: 1', summary)
+
     def test_status_has_zero_counts_before_any_review(self):
         text = progress.status(self.journal)
         self.assertIn('Findings across all passes: 0', text)

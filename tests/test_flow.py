@@ -114,7 +114,7 @@ class FlowTests(RepositoryTest):
             source = output / 'drafts' / ('issue%d.md' % index)
             source.write_text(body)
             value = publish(output, 'finding', source)
-            path = output / 'findings' / (value['id'] + '.md')
+            path = output / 'findings' / (value['id'] + '--pZ--' + source.name)
             self.assertEqual(read_document(path)['body'], body)
             self.assertNotIn('_text', path.read_text())
             self.assertNotIn('draft_sha256', path.read_text())

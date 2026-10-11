@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import pwd
 import re
 import shutil
 import subprocess
@@ -14,13 +13,15 @@ import tempfile
 
 from . import ReviewError, read_json, write_json
 from . import configuration as review_config
+from . import codex
+from . import agents, credentials
 from .source import git
 from .store import local_directory
 
 
 SKILL = Path(__file__).resolve().parents[2]
 ENTRY = SKILL / "scripts" / "review.py"
-RELEASE = read_json(SKILL / "runtime-release.json")
+RELEASE = read_json(SKILL / "runtime-release.json")['claude']
 DOWNLOADS = "https://downloads.claude.ai/claude-code-releases"
 CONTAINER_CREDENTIALS = "/run/agr/credentials.json"
 
@@ -37,7 +38,7 @@ def platform_name():
     system = {"Linux": "linux", "Darwin": "darwin"}.get(platform.system())
     architecture = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(platform.machine())
     if not system or not architecture:
-        raise ReviewError("Managed Claude requires Linux or macOS on x64 or ARM64")
+        raise ReviewError("Managed reviewers require Linux or macOS on x64 or ARM64")
     name = system + "-" + architecture
     if system == "linux" and (list(Path("/lib").glob("libc.musl-*.so.1")) or platform.libc_ver()[0] == "musl"):
         name += "-musl"
@@ -71,57 +72,59 @@ def install_binary(destination):
     return destination
 
 
-def configuration(repo, values=None, global_values=None):
-    values = review_config.effective(repo, values, global_values)
+def configuration(repo, values=None, global_values=None, agent=None, overrides=None):
+    selected = {**(overrides or {})}
+    if agent is not None:
+        selected['agent'] = agent
+    values = review_config.effective(repo, values, global_values, selected)
+    agent = values['agent'].strip()
     mode = values['runtime']
+    if mode == 'auto':
+        mode = 'docker'
     if mode not in {"docker", "native"}:
-        raise ReviewError("Runtime must be docker or native")
-    credentials = Path(values['credentials_file'] or Path.home() / '.claude/.credentials.json').expanduser()
-    if not credentials.is_absolute():
-        credentials = Path(repo) / credentials
-    credentials = credentials.resolve()
-    auth = values['auth']
-    if auth not in {'auto', 'file', 'keychain'}:
-        raise ReviewError('Auth must be auto, file or keychain')
-    if auth == 'keychain' and (platform.system() != 'Darwin' or mode != 'native'):
-        raise ReviewError('Keychain authentication requires native macOS; set runtime = native or use auth = file with credentials_file in config.ini')
+        raise ReviewError("Runtime must be auto, docker or native")
+    authentication = agents.adapter(agent).authentication(repo, values)
     name = values['window_name'] or None
     if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(character) < 33 or ord(character) > 126 for character in name)):
         raise ReviewError("Window name must contain 1 to 80 ASCII characters without whitespace")
-    if auth == 'auto':
-        auth = 'keychain' if platform.system() == 'Darwin' and mode == 'native' and not values['credentials_file'] else 'file'
-    return {"runtime": mode, 'auth': auth, "credentials_file": str(credentials), "window_name": name}
+    return {"runtime": mode, 'agent': agent, "window_name": name, **authentication}
 
 
 def auth_source(settings):
     selected = settings.get('auth', 'auto')
     if selected == 'auto':
-        selected = 'keychain' if platform.system() == 'Darwin' and settings['runtime'] == 'native' else 'file'
+        selected = 'keychain' if settings.get('agent', 'claude') == 'claude' and platform.system() == 'Darwin' and settings['runtime'] == 'native' else 'file'
     return selected
 
 
 def keychain_account():
-    account = pwd.getpwuid(os.getuid()).pw_name
-    return account if re.fullmatch(r'[a-zA-Z0-9._-]+', account) else 'claude-code-user'
+    return agents.adapter('claude').account()
 
 
 def check_credentials(settings):
-    if auth_source(settings) == 'keychain':
-        result = subprocess.run(['/usr/bin/security', 'find-generic-password', '-a', keychain_account(), '-s', 'Claude Code-credentials'],
-                                stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
-        if result.returncode:
-            raise ReviewError('Claude subscription login was not found in the macOS Keychain; sign in to Claude Code with its default profile first')
-        return 'macOS Keychain entry present; subscription checked by managed Claude before launch'
-    if not Path(settings['credentials_file']).is_file():
-        raise ReviewError('Set credentials_file in config.ini to an existing subscription credentials file: ' + settings['credentials_file'] + '; native macOS can use runtime = native with auth = keychain')
-    return 'credentials file present; subscription checked by managed Claude before launch'
+    selected = {**settings, 'auth': auth_source(settings)}
+    if selected['auth'] == 'keychain':
+        selected.setdefault('keychain_service', 'Claude Code-credentials')
+        selected.setdefault('keychain_account', keychain_account())
+    return credentials.check(selected)
+
+
+def prerequisites(settings):
+    required = ('git', 'tmux', 'docker') if settings['runtime'] == 'docker' else ('git', 'tmux', 'curl')
+    paths = {name: shutil.which(name) for name in required}
+    missing = [name for name, path in paths.items() if path is None]
+    if missing:
+        raise ReviewError('Missing required tools: ' + ', '.join(missing))
+    return paths
 
 
 def native_path():
     return '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' if platform.system() == 'Darwin' else os.defpath
 
 
-def native_sandbox():
+def native_sandbox(agent='claude'):
+    if agent == 'codex':
+        return {'enabled': True, 'message': 'Native Codex requests its built-in workspace-write sandbox for the isolated working directory and reviewer output; source is outside those writable roots. Sandbox failures are not retried unsandboxed.'}
     required = ('sandbox-exec',) if platform.system() == 'Darwin' else ('bwrap', 'socat')
     missing = [name for name in required if not shutil.which(name, path=native_path())]
     if missing:
@@ -147,14 +150,15 @@ def checked(args, **kwargs):
     return result.stdout.strip()
 
 
-def image_tag():
+def image_tag(agent='claude'):
+    release = codex.RELEASE if agent == 'codex' else RELEASE
     paths = [SKILL / "Dockerfile", SKILL / ".dockerignore", SKILL / "runtime-release.json"]
     paths += sorted((SKILL / "scripts").rglob("*.py"))
     value = hashlib.sha256()
     for path in paths:
         value.update(path.relative_to(SKILL).as_posix().encode())
         value.update(path.read_bytes())
-    return "agr-claude:" + RELEASE["version"] + "-" + value.hexdigest()[:16]
+    return 'agr-' + agent + ':' + release["version"] + "-" + value.hexdigest()[:16]
 
 
 def docker_connection():
@@ -162,7 +166,7 @@ def docker_connection():
     if not executable:
         if shutil.which('podman'):
             raise ReviewError('Podman is not supported yet; use Docker Engine without userns-remap')
-        raise ReviewError('Docker is required by default; explicitly set runtime = native in config.ini to use native mode with weaker isolation')
+        raise ReviewError('Docker is required for the selected runtime; set [review] runtime = native to use native mode with weaker isolation')
     executable = str(Path(executable).absolute())
     keys = ('HOME', 'PATH', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
             'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH',
@@ -234,34 +238,43 @@ def docker_identity(client=None):
 
 
 def setup(repo, settings):
+    prerequisites(settings)
     check_credentials(settings)
-    record = {"mode": settings["runtime"], "version": RELEASE["version"], 'auth': auth_source(settings), "credentials_file": settings['credentials_file'], "window_name": settings["window_name"]}
+    agent = settings.get('agent', 'claude')
+    release = codex.RELEASE if agent == 'codex' else RELEASE
+    record = {"mode": settings["runtime"], 'agent': agent, "version": release["version"], 'auth': auth_source(settings), "credentials_file": settings['credentials_file'], "window_name": settings["window_name"]}
+    for key in ('keychain_service', 'keychain_account'):
+        if key in settings:
+            record[key] = settings[key]
     if record["mode"] == "native":
-        binary = install_binary(local_directory(repo) / ".cache" / "runtime" / RELEASE["version"] / platform_name() / "claude")
+        cache = local_directory(repo) / '.cache' / 'runtime'
+        if agent == 'codex':
+            binary = codex.install_package(cache / 'codex' / release['version'] / platform_name() / 'package')
+            record['package_sha256'] = codex.package_digest(binary.parent.parent)
+        else:
+            binary = install_binary(cache / release['version'] / platform_name() / 'claude')
         record.update(executable=str(binary), sha256=digest(binary), python=sys.executable, entry=str(ENTRY))
         common = git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir').decode().strip()
-        record.update(sandbox=native_sandbox(), read_directories=[str(SKILL), common])
-        if record['auth'] == 'keychain':
-            record['keychain_account'] = keychain_account()
+        record.update(sandbox=native_sandbox(agent), read_directories=[str(SKILL), common])
         print(record['sandbox']['message'], file=sys.stderr, flush=True)
         return record
     client = docker_connection()
     identity = docker_identity(client)
-    tag = image_tag()
+    tag = image_tag(agent)
     images = checked(client['command'] + ["image", "ls", "--no-trunc", "--quiet", tag], env=client['environment'])
     if not images:
         print("Building " + tag, file=sys.stderr, flush=True)
-        subprocess.run(client['command'] + ["build", "--progress", "plain", "--tag", tag, str(SKILL)], env=client['environment'], check=True, stdout=sys.stderr, timeout=1800)
+        subprocess.run(client['command'] + ["build", "--progress", "plain", "--build-arg", 'REVIEW_AGENT=' + agent, "--tag", tag, str(SKILL)], env=client['environment'], check=True, stdout=sys.stderr, timeout=1800)
     image = checked(client['command'] + ["image", "inspect", "--format", "{{.Id}}", tag], env=client['environment'])
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
         raise ReviewError("Docker returned an invalid image ID")
-    record.update(identity, docker_client=client, image=image, image_tag=tag, executable="/opt/agr/bin/claude", python="/usr/local/bin/python3", entry="/opt/agr/scripts/review.py")
+    record.update(identity, docker_client=client, image=image, image_tag=tag, executable='/opt/agr/codex/bin/codex' if agent == 'codex' else '/opt/agr/bin/claude', python="/usr/local/bin/python3", entry="/opt/agr/scripts/review.py")
     return record
 
 
-def environment(home, repo, container=False):
+def environment(home, repo, container=False, agent='claude'):
     home = str(home)
-    return {
+    result = {
         "HOME": home, "CLAUDE_CONFIG_DIR": home + "/.claude", "PATH": "/usr/local/bin:/usr/bin:/bin" if container else native_path(),
         "LANG": "en_US.UTF-8" if not container and platform.system() == 'Darwin' else "C.UTF-8",
         "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
@@ -271,6 +284,11 @@ def environment(home, repo, container=False):
         "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": str(repo),
     }
+    if agent == 'codex':
+        for key in ('CLAUDE_CONFIG_DIR', 'DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'IS_SANDBOX'):
+            del result[key]
+        result.update(CODEX_HOME=home + '/.codex', TMPDIR=home + '/tmp')
+    return result
 
 
 def mount(source, destination, readonly=False):
@@ -286,19 +304,23 @@ def container_command(journal, number):
     record = journal.round(number)
     runtime = record["runtime"]
     repo = Path(journal.manifest["repo"])
+    common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
+    private = credentials.private_directory().resolve()
+    for source in (repo.resolve(), common.resolve()):
+        if private.is_relative_to(source) or source.is_relative_to(private):
+            raise ReviewError('Source or Git mount would expose private credential storage: ' + str(private))
     name = "agr-" + record["session_id"]
     args = docker_client(runtime)['command'] + ["run", "--rm", "--init", "--interactive", "--tty", "--name", name,
             "--label", "agr.session=" + record["session_id"], "--user", runtime["user"],
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
             "--tmpfs", "/tmp:rw,exec,nosuid,mode=1777", "--workdir", str(repo)]
     args += ["--mount", mount(repo, repo, True)]
-    common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
     if not common.is_relative_to(repo):
         args += ["--mount", mount(common, common, True)]
     output = journal.round_directory(number) / "output"
     args += ["--mount", mount(output, output)]
     args += ["--mount", mount(runtime["credentials_file"], CONTAINER_CREDENTIALS)]
-    for key, value in environment("/tmp/agr-home", repo, container=True).items():
+    for key, value in environment("/tmp/agr-home", repo, container=True, agent=record['reviewer']).items():
         args += ["--env", key + "=" + value]
     args += [runtime["image"], "_review", str(journal.directory), str(number)]
     return args
@@ -335,12 +357,28 @@ def inner_review(journal, number):
     runtime = record["runtime"]
     home = Path(os.environ["HOME"])
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if record['reviewer'] == 'codex':
+        executable = runtime['executable']
+        if runtime['mode'] == 'native':
+            if not runtime.get('package_sha256') or codex.package_digest(Path(executable).parent.parent) != runtime['package_sha256']:
+                raise ReviewError('Managed Codex package changed or is incomplete; prepare a new round')
+        credentials = runtime['credentials_file'] if runtime['mode'] == 'native' else CONTAINER_CREDENTIALS
+        codex.initialize(home, credentials)
+        os.chdir(home)
+        version = checked([executable, '--version'])
+        if version != 'codex-cli ' + runtime['version']:
+            raise ReviewError('Managed Codex version changed: ' + version)
+        auth = codex.subscription_auth([executable], home)
+        write_json(journal.round_directory(number) / 'output' / '.runtime.json', {'auth': auth, 'version': runtime['version']})
+        args = codex.command(record, journal.round_directory(number))
+        os.execve(executable, args, dict(os.environ))
+        return
     config = home / ".claude"
     config.mkdir(exist_ok=True, mode=0o700)
     if runtime["mode"] == "native":
         if digest(runtime["executable"]) != runtime["sha256"]:
             raise ReviewError("Managed Claude changed since this round was prepared")
-    if runtime.get('auth') == 'keychain':
+    if runtime.get('auth') == 'keychain' and runtime.get('credential_transport') != 'file':
         os.environ['CLAUDE_SECURESTORAGE_CONFIG_DIR'] = ''
         os.environ['USER'] = runtime['keychain_account']
     else:

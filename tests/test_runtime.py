@@ -82,6 +82,29 @@ class RuntimeTests(RepositoryTest):
         encoded = runtime.mount("/path/with, comma", "/target with space", True)
         self.assertEqual(next(csv.reader([encoded])), ["type=bind", "source=/path/with, comma", "target=/target with space", "readonly"])
 
+    def test_container_rejects_source_mounts_overlapping_private_credentials(self):
+        record = self.docker_record()
+        for directory in (self.repo / 'credentials', self.repo.parent):
+            with self.subTest(directory=directory), patch('agr.runtime.credentials.private_directory', return_value=directory):
+                with self.assertRaisesRegex(ReviewError, 'expose private credential storage'):
+                    runtime.container_command(self.journal, record['id'])
+
+    def test_container_rejects_git_mount_exposing_private_credentials(self):
+        record = self.docker_record()
+        common = self.repo.parent / 'shared-git'
+        private = common / 'credentials'
+        with patch('agr.runtime.git', return_value=str(common).encode()), patch('agr.runtime.credentials.private_directory', return_value=private):
+            with self.assertRaisesRegex(ReviewError, 'expose private credential storage'):
+                runtime.container_command(self.journal, record['id'])
+
+    def test_container_resolves_private_storage_parent_symlinks_before_mounting(self):
+        record = self.docker_record()
+        alias = self.repo.parent / 'private-alias'
+        alias.symlink_to(self.repo, target_is_directory=True)
+        with patch('agr.runtime.credentials.private_directory', return_value=alias / 'credentials'):
+            with self.assertRaisesRegex(ReviewError, 'expose private credential storage'):
+                runtime.container_command(self.journal, record['id'])
+
     def test_native_home_is_private_and_credentials_remain_linked(self):
         record = self.prepared()
         home = self.journal.directory / 'runtime-home'
@@ -120,16 +143,26 @@ class RuntimeTests(RepositoryTest):
         self.assertIn('--setting-sources', check.call_args.args[0])
         self.assertNotIn('fixture-user', (self.journal.round_directory(record['id']) / 'output/.runtime.json').read_text())
 
-    def test_native_macos_keychain_is_auto_selected_but_never_for_docker(self):
-        with patch('agr.runtime.platform.system', return_value='Darwin'):
-            for values, expected in (({'runtime': 'native'}, 'keychain'), ({}, 'file'), ({'runtime': 'native', 'credentials_file': '/explicit/credentials'}, 'file')):
+    def test_macos_keychain_can_be_selected_for_native_and_docker(self):
+        with patch('agr.runtime.platform.system', return_value='Darwin'), patch('agr.keychain.present', return_value=True):
+            for values, expected in (({'runtime': 'native'}, 'keychain'), ({}, 'keychain'), ({'runtime': 'docker'}, 'keychain'), ({'runtime': 'native', 'credentials_file': '/explicit/credentials'}, 'file')):
                 with self.subTest(values=values):
                     self.assertEqual(runtime.auth_source(runtime.configuration(self.repo, values)), expected)
-            with self.assertRaisesRegex(ReviewError, 'requires native macOS'):
-                runtime.configuration(self.repo, {'runtime': 'docker', 'auth': 'keychain'})
+            self.assertEqual(runtime.configuration(self.repo, {'runtime': 'docker', 'auth': 'keychain'})['auth'], 'keychain')
         with patch('agr.runtime.platform.system', return_value='Linux'):
-            with self.assertRaisesRegex(ReviewError, 'requires native macOS'):
+            with self.assertRaisesRegex(ReviewError, 'requires macOS'):
                 runtime.configuration(self.repo, {'runtime': 'native', 'auth': 'keychain'})
+
+    def test_claude_docker_uses_keychain_bridge_file_without_native_keychain_access(self):
+        record = self.prepared()
+        self.journal.update_round(record['id'], runtime={**record['runtime'], 'mode': 'docker',
+            'auth': 'keychain', 'credential_transport': 'file', 'keychain_account': 'fixture-user'})
+        home = self.journal.directory / 'bridge-home'
+        auth = {'authMethod': 'claude.ai', 'apiProvider': 'firstParty', 'subscriptionType': 'test-only'}
+        with patch.dict(os.environ, runtime.environment(home, self.repo), clear=True), patch('agr.runtime.checked', return_value=record['runtime']['version']), patch('agr.runner.subscription_auth', return_value=auth), patch('agr.runtime.os.execve') as execute:
+            runtime.inner_review(self.journal, record['id'])
+        self.assertEqual(os.readlink(home / '.claude/.credentials.json'), runtime.CONTAINER_CREDENTIALS)
+        self.assertNotIn('CLAUDE_SECURESTORAGE_CONFIG_DIR', execute.call_args.args[2])
 
     def test_keychain_preflight_reads_metadata_without_exporting_tokens(self):
         settings = {'runtime': 'native', 'auth': 'keychain'}

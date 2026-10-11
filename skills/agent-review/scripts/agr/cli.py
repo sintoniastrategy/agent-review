@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import shutil
 
 from . import ReviewError, now, read_json
 from .prompts import prepare, previous_review
@@ -14,15 +13,18 @@ from . import tmux
 from . import runtime
 from . import progress
 from . import configuration
+from . import priorities
 from .names import round_name
 
 
 def parser():
-    result = argparse.ArgumentParser(description="SST Agent Review helper; Python 3.9+, Git, tmux and managed Claude")
+    result = argparse.ArgumentParser(description="SST Agent Review helper; Python 3.9+, Git, tmux and managed reviewers")
     result.add_argument("--repo", default=".")
     result.add_argument("--session")
     commands = result.add_subparsers(dest="command", required=True)
-    commands.add_parser("setup")
+    setup = commands.add_parser("setup")
+    setup.add_argument('--agent', choices=configuration.AGENTS)
+    setup.add_argument('--runtime', choices=('auto', 'docker', 'native'))
     check = commands.add_parser('preflight')
     check.add_argument('--base')
     check.add_argument('--human', action='store_true')
@@ -35,11 +37,13 @@ def parser():
     review = commands.add_parser("prepare")
     review.add_argument('--human', action='store_true')
     review.add_argument("--parallel-with", metavar='REVIEWER')
-    review.add_argument('--agent', choices=('claude',))
-    review.add_argument('--model')
-    review.add_argument('--effort', choices=configuration.EFFORTS)
-    review.add_argument('--preset', metavar='NAME_OR_DIRECTORY')
-    review.add_argument('--scope', choices=configuration.SCOPES)
+    for selected in (check, review):
+        selected.add_argument('--agent', choices=configuration.AGENTS)
+        selected.add_argument('--model')
+        selected.add_argument('--effort', choices=configuration.CODEX_EFFORTS)
+        selected.add_argument('--preset', metavar='NAME_OR_DIRECTORY')
+        selected.add_argument('--scope', choices=configuration.SCOPES)
+        selected.add_argument('--runtime', choices=('auto', 'docker', 'native'))
     start = commands.add_parser("start")
     start.add_argument('--human', action='store_true')
     start.add_argument("round", metavar='REVIEWER')
@@ -58,7 +62,7 @@ def parser():
     watch.add_argument('round', metavar='REVIEWER')
     commands.add_parser("next").add_argument('--human', action='store_true')
     queue_command = commands.add_parser('queue')
-    queue_command.add_argument('--priority', action='append', choices=('P0', 'P1', 'P2', 'P3', 'info', 'unclassified'))
+    queue_command.add_argument('--priority', action='append', choices=priorities.VALUES)
     queue = queue_command.add_mutually_exclusive_group()
     queue.add_argument('--human', action='store_true')
     queue.add_argument('--table', action='store_true')
@@ -67,7 +71,7 @@ def parser():
     finding.add_argument('--human', action='store_true')
     assess = commands.add_parser("assess")
     assess.add_argument("id")
-    assess.add_argument("--priority", required=True, choices=("P0", "P1", "P2", "P3", "info", "unclassified"))
+    assess.add_argument("--priority", required=True, choices=priorities.VALUES)
     assess.add_argument("--reason", required=True)
     assess.add_argument("--proposal", required=True)
     assess.add_argument('--recommendation', choices=('fix', 'leave', 'discuss'))
@@ -172,15 +176,11 @@ def markdown(data, selected):
 def execute(args):
     repo = root(args.repo)
     if args.command == 'instructions':
-        return configuration.load_review(repo)[args.phase + '_prompt']
+        return configuration.skill_prompt(args.phase)
     if args.command == 'preflight':
-        settings = runtime.configuration(repo)
-        selected = configuration.load_review(repo)
-        tools = ('git', 'tmux', 'docker') if settings['runtime'] == 'docker' else ('git', 'tmux')
-        paths = {name: shutil.which(name) for name in tools}
-        missing = [name for name, path in paths.items() if path is None]
-        if missing:
-            raise ReviewError('Missing required tools: ' + ', '.join(missing))
+        selected = configuration.load_review(repo, {key: getattr(args, key) for key in configuration.REVIEW_KEYS})
+        settings = runtime.configuration(repo, agent=selected['agent'], overrides={'runtime': args.runtime})
+        paths = runtime.prerequisites(settings)
         auth = runtime.check_credentials(settings)
         base = args.base
         session = repo / '.agr/session.json'
@@ -195,17 +195,17 @@ def execute(args):
         result = {
             'tools': paths, 'base': base, 'base_commit': base_commit, 'head': head, 'merge_base': merge_base,
             **settings, **{key: selected[key] for key in configuration.REVIEW_KEYS},
-            'defaults': str(configuration.SKILL / 'defaults.ini'),
+            'defaults': str(configuration.defaults_path()),
             'global_config': str(configuration.global_path()), 'worktree_config': str(repo / '.agr/config.ini'),
             'authentication': auth,
         }
         if settings['runtime'] == 'docker':
             result.update(runtime.docker_identity())
         else:
-            result['sandbox'] = runtime.native_sandbox()['message']
+            result['sandbox'] = runtime.native_sandbox(selected['agent'])['message']
         return '\n'.join(key + ': ' + str(value) for key, value in result.items()) if args.human else result
     if args.command == "setup":
-        return runtime.setup(repo, runtime.configuration(repo))
+        return runtime.setup(repo, runtime.configuration(repo, agent=args.agent, overrides={'runtime': args.runtime}))
     if args.command == "init":
         resolve(repo, args.base)
         journal = Journal.create(repo, args.base, args.task_file.read_text(encoding="utf-8"))
@@ -227,7 +227,7 @@ def execute(args):
             prior = journal.round(parallel_with).get('previous_review') if parallel_with is not None else previous_review(journal.export())
             if prior is None:
                 raise ReviewError('Changes-only review needs a previous completed review; select scope full')
-        settings = runtime.setup(repo, runtime.configuration(repo, values))
+        settings = runtime.setup(repo, runtime.configuration(repo, values, agent=selected['agent'], overrides={'runtime': args.runtime}))
         record = prepare(journal, settings, parallel_with=parallel_with, selection=selected)
         return progress.describe(journal, record['id']) if args.human else record
     if command == "start":
@@ -261,7 +261,8 @@ def execute(args):
     if command in {"next", "queue", "finding"}:
         findings = journal.findings()
         if command == 'queue' and args.priority:
-            findings = [item for item in findings if item['priority'] in args.priority]
+            selected = {priorities.canonical(value) for value in args.priority}
+            findings = [item for item in findings if item['priority'] in selected]
         if command == 'queue' and args.table:
             return progress.finding_table(findings, journal.rows('rounds'))
         if command == "next":
@@ -299,7 +300,7 @@ def execute(args):
         artifact = (directory / args.source_artifact).resolve()
         if not artifact.is_relative_to(directory) or not artifact.is_file() or not args.reason.strip():
             raise ReviewError("Supply an existing raw artifact from this round and an import reason")
-        return journal.add_finding(args.round, values, imported={"artifact": str(artifact), "reason": args.reason, "at": now()})
+        return journal.add_finding(args.round, values, imported={"artifact": str(artifact), "reason": args.reason, "at": now()}, draft_name=args.markdown_file.stem)
     if command == "report":
         return {
             "round": journal.round(args.round),
