@@ -103,6 +103,37 @@ class AgentSettingsTests(RepositoryTest):
         path.symlink_to(target)
         self.assertEqual(credentials.file_source(path)['credentials_file'], str(path))
 
+    def test_preflight_rejects_custom_claude_filename_in_both_runtimes(self):
+        path = Path(self.fake_runtime()['credentials_file']).with_name('custom.json')
+        path.write_text('{}')
+        self.write_settings({'claude': {'credentials_file': str(path)}})
+        for mode in ('native', 'docker'):
+            with self.subTest(mode=mode), patch('agr.runtime.docker_connection') as docker:
+                with self.assertRaisesRegex(ReviewError, 'requires a file named .credentials.json'):
+                    self.command('preflight', '--base', 'base', '--runtime', mode)
+                docker.assert_not_called()
+
+    def test_preflight_accepts_native_claude_symlink_filename(self):
+        path = Path(self.fake_runtime()['credentials_file'])
+        target = path.with_name('custom.json')
+        path.rename(target)
+        path.symlink_to(target.name)
+        self.write_settings({'claude': {'credentials_file': str(path)}})
+        with patch('agr.runtime.docker_identity', return_value={'docker_mode': 'rootless', 'user': '0:0'}):
+            result = self.command('preflight', '--base', 'base')
+        self.assertEqual(result['credentials_file'], str(path))
+
+    def test_preflight_and_setup_reject_source_credentials_before_docker_access(self):
+        path = self.repo / 'auth.json'
+        path.write_text('{}')
+        self.write_settings({'agent': 'codex', 'codex': {'credentials_file': 'auth.json'}})
+        with patch('agr.runtime.docker_connection') as docker:
+            with self.assertRaisesRegex(ReviewError, 'Credential directory mount would expose source'):
+                self.command('preflight', '--base', 'base')
+            with self.assertRaisesRegex(ReviewError, 'Credential directory mount would expose source'):
+                runtime.setup(self.repo, runtime.configuration(self.repo))
+            docker.assert_not_called()
+
 
 class CredentialBridgeTests(RepositoryTest):
     def setUp(self):

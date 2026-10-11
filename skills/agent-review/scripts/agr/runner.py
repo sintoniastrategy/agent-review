@@ -86,6 +86,22 @@ def file_activity(paths):
     return result
 
 
+def startup_failure(path):
+    try:
+        with path.open('rb') as source:
+            details = json.loads(source.read(65537))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    if not isinstance(details, dict) or any(not isinstance(details.get(key), str) or not details[key].strip()
+                                           for key in ('error', 'stage', 'code')):
+        return None
+    allowed = {'authentication': {'authentication_failed', 'authentication_timeout', 'login_required', 'subscription_required'},
+               'startup': {'startup_failed'}}
+    if len(details['error']) > 8192 or details['code'] not in allowed.get(details['stage'], set()):
+        return None
+    return details
+
+
 def observe(process, journal, number, directory, interrupted, bridge=None):
     record = journal.round(number)
     output = directory / 'output'
@@ -105,9 +121,8 @@ def observe(process, journal, number, directory, interrupted, bridge=None):
             reporting.complete(output)
             return {'status': 'completed'}
         if process.poll() is not None:
-            failure = output / '.runtime-error.json'
-            if failure.is_file():
-                details = read_json(failure)
+            details = startup_failure(output / '.runtime-error.json') if not submitted else None
+            if details:
                 return {'status': 'failed', 'error': details['error'], 'error_stage': details['stage'],
                     'error_code': details['code'], 'exit_code': process.returncode}
             return {'status': 'failed', 'error': 'Interactive ' + record['reviewer'].capitalize() + ' exited without a validated completion marker', 'exit_code': process.returncode}

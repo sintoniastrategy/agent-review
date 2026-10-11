@@ -182,7 +182,7 @@ def execute(args):
         selected = configuration.load_review(repo, {key: getattr(args, key) for key in configuration.REVIEW_KEYS})
         settings = runtime.configuration(repo, agent=selected['agent'], overrides={'runtime': args.runtime})
         paths = runtime.prerequisites(settings)
-        auth = runtime.check_credentials(settings)
+        auth = runtime.check_credentials(settings, repo)
         base = args.base
         session = repo / '.agr/session.json'
         if base is None and session.is_file():

@@ -170,7 +170,7 @@ class CodexRuntimeTests(RepositoryTest):
         client = self.fake_docker_client()
         results = [json.dumps({'Server': {'Components': [{'Name': 'Engine'}]}}), json.dumps({'OSType': 'linux', 'SecurityOptions': ['name=rootless']}), '', 'sha256:' + '1' * 64]
         settings = runtime.configuration(self.repo, {'agent': 'codex', 'credentials_file': record['runtime']['credentials_file']})
-        with patch('agr.runtime.docker_connection', return_value=client), patch('agr.runtime.checked', side_effect=results), patch('agr.runtime.subprocess.run') as build:
+        with patch('agr.runtime.git', return_value=str(self.repo / '.git').encode()), patch('agr.runtime.docker_connection', return_value=client), patch('agr.runtime.checked', side_effect=results), patch('agr.runtime.subprocess.run') as build:
             managed = runtime.setup(self.repo, settings)
         self.assertIn('REVIEW_AGENT=codex', build.call_args.args[0])
         self.assertEqual(managed['executable'], '/opt/agr/codex/bin/codex')

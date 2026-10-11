@@ -142,3 +142,31 @@ class SharedCredentialsDockerTests(RepositoryTest):
                 self.stop(process)
                 self.assertEqual(process.returncode, 0)
                 self.journal.update_round(record['id'], status='completed')
+
+    def test_symlink_chain_reads_and_writes_the_physical_target_in_docker(self):
+        for agent in ('claude', 'codex'):
+            with self.subTest(agent=agent):
+                record = self.prepared(agent=agent)
+                path = Path(record['runtime']['credentials_file'])
+                base = path.parent
+                store, tokens, other = base / 'real/store', base / 'real/tokens', base / 'other'
+                for directory in (store, tokens, other):
+                    directory.mkdir(parents=True)
+                (other / 'store').symlink_to(store, target_is_directory=True)
+                target = tokens / 'auth.json'
+                write_json(target, {'physical-target': True})
+                (store / 'auth.json').symlink_to('../tokens/auth.json')
+                path.unlink()
+                path.symlink_to(other / 'store/auth.json')
+                managed = {**record['runtime'], **self.identity, 'auth': 'file', 'mode': 'docker',
+                    'docker_client': self.client, 'image': os.environ['AGR_TEST_DOCKER_IMAGE']}
+                record = self.journal.update_round(record['id'], runtime=managed)
+                process = self.probe(record, True)
+                self.assertEqual(self.send(process, 'read'), {'physical-target': True})
+                self.assertTrue(self.send(process, 'write', value={'container-write': True}))
+                self.assertEqual(json.loads(target.read_text()), {'container-write': True})
+                write_json(target, {'host-replacement': True})
+                self.assertEqual(self.send(process, 'read'), {'host-replacement': True})
+                self.stop(process)
+                self.assertEqual(process.returncode, 0)
+                self.journal.update_round(record['id'], status='completed')

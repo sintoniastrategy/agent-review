@@ -35,12 +35,11 @@ class RuntimeTests(RepositoryTest):
             (version, {**info, 'SecurityOptions': ['unexpected']}, 'Cannot determine Docker'),
             ([], info, 'Cannot identify'),
         ]
-        credentials = self.repo / '.agr' / 'test-credentials.json'
-        credentials.write_text('{}')
+        credentials = Path(self.fake_runtime()['credentials_file'])
         settings = runtime.configuration(self.repo, {'credentials_file': str(credentials)})
         for server, details, message in cases:
             with self.subTest(message=message, info=details):
-                with patch('agr.runtime.docker_connection', return_value=self.fake_docker_client()), patch('agr.runtime.checked', side_effect=[json.dumps(server), json.dumps(details)]) as check, patch('agr.runtime.subprocess.run') as build:
+                with patch('agr.runtime.git', return_value=str(self.repo / '.git').encode()), patch('agr.runtime.docker_connection', return_value=self.fake_docker_client()), patch('agr.runtime.checked', side_effect=[json.dumps(server), json.dumps(details)]) as check, patch('agr.runtime.subprocess.run') as build:
                     with self.assertRaisesRegex(ReviewError, message):
                         runtime.setup(self.repo, settings)
                 self.assertEqual(check.call_count, 2)
@@ -131,28 +130,98 @@ class RuntimeTests(RepositoryTest):
         self.assertTrue(settings['permissions']['blockReadsOutsideWorkingDirectories'])
         self.assertNotIn('ANTHROPIC_API_KEY', execute.call_args.args[2])
 
-    def test_custom_claude_filename_keeps_its_existing_link_transport(self):
+    def test_prepared_custom_claude_filename_is_rejected_before_authentication(self):
         record = self.prepared()
         source = Path(record['runtime']['credentials_file'])
         renamed = source.with_name('custom.json')
         source.rename(renamed)
         self.journal.update_round(record['id'], runtime={**record['runtime'], 'credentials_file': str(renamed)})
         home = self.repo / '.agr/custom-home'
-        with patch.dict(os.environ, runtime.environment(home, self.repo), clear=True), patch('agr.runtime.checked', return_value=record['runtime']['version']), patch('agr.runner.subscription_auth', return_value={}), patch('agr.runtime.os.execve'):
-            runtime.inner_review(self.journal, record['id'])
-        self.assertEqual((home / '.claude/.credentials.json').resolve(), renamed)
+        with patch.dict(os.environ, runtime.environment(home, self.repo), clear=True), patch('agr.runner.subscription_auth') as auth, patch('agr.runtime.os.execve') as execute:
+            with self.assertRaisesRegex(ReviewError, 'requires a file named .credentials.json'):
+                runtime.inner_review(self.journal, record['id'])
+        auth.assert_not_called()
+        execute.assert_not_called()
+        self.assertFalse((home / '.claude/.credentials.json').is_symlink())
+
+    def credential_bindings(self, path):
+        return [dict(part.split('=', 1) for part in next(csv.reader([value]))) for value in runtime.credential_mounts(path, self.repo)]
 
     def test_credential_symlink_mounts_follow_targets_without_pinning_files(self):
-        directory = self.repo / '.agr/login'
+        directory = Path(self.temporary.name) / 'login'
         directory.mkdir()
-        target = self.repo / '.agr/tokens/auth.json'
+        target = directory.parent / 'tokens/auth.json'
         target.parent.mkdir()
         target.write_text('{}')
         link = directory / 'auth.json'
         link.symlink_to('../tokens/auth.json')
-        bindings = [dict(part.split('=', 1) for part in next(csv.reader([value]))) for value in runtime.credential_mounts(link)]
+        bindings = self.credential_bindings(link)
         self.assertEqual([item['source'] for item in bindings], [str(directory), str(target.parent)])
         self.assertEqual([item['target'] for item in bindings], ['/run/agr/auth', '/run/agr/tokens'])
+
+    def test_symlink_chain_uses_physical_parent_before_resolving_dot_dot(self):
+        base = Path(self.temporary.name)
+        login = base / 'login'
+        store = base / 'real/store'
+        tokens = base / 'real/tokens'
+        other = base / 'other'
+        for directory in (login, store, tokens, other):
+            directory.mkdir(parents=True)
+        (other / 'store').symlink_to(store, target_is_directory=True)
+        (tokens / 'auth.json').write_text('{"expected":true}')
+        (store / 'auth.json').symlink_to('../tokens/auth.json')
+        path = login / 'auth.json'
+        path.symlink_to(other / 'store/auth.json')
+        self.assertEqual(json.loads(path.read_text()), {'expected': True})
+        bindings = self.credential_bindings(path)
+        self.assertEqual([item['source'] for item in bindings], [str(login), str(store), str(tokens)])
+        self.assertEqual([item['target'] for item in bindings], ['/run/agr/auth', str(other / 'store'), str(other / 'tokens')])
+
+    def test_credential_symlink_cycle_is_reported(self):
+        directory = Path(self.fake_runtime()['credentials_file']).parent
+        first, second = directory / 'first', directory / 'second'
+        first.symlink_to('second')
+        second.symlink_to('first')
+        with self.assertRaisesRegex(ReviewError, 'Credentials symlink cycle'):
+            self.credential_bindings(first)
+
+    def test_container_rejects_credentials_overlapping_protected_directories(self):
+        record = self.docker_record()
+        common = self.repo.parent / 'shared-git'
+        private = self.repo.parent / 'private-bridge'
+        cases = [(Path.home(), 'HOME'), (Path.home().parent, 'HOME'),
+                 (self.repo, 'source'), (self.repo / 'nested', 'source'),
+                 (self.journal.directory, 'review journal'), (common, 'Git'), (common / 'nested', 'Git'),
+                 (private, 'private credential storage'), (private / 'nested', 'private credential storage')]
+        for directory, label in cases:
+            with self.subTest(directory=directory), patch('agr.runtime.git', return_value=str(common).encode()), patch('agr.runtime.credentials.private_directory', return_value=private):
+                self.journal.update_round(record['id'], runtime={**record['runtime'], 'credentials_file': str(directory / '.credentials.json')})
+                with self.assertRaisesRegex(ReviewError, 'would expose ' + label):
+                    runtime.container_command(self.journal, record['id'])
+
+    def test_credential_symlink_hops_cannot_expose_home_or_source(self):
+        directory = Path(self.fake_runtime()['credentials_file']).parent
+        link = directory / 'auth.json'
+        for target in (Path.home() / 'auth.json', self.repo / 'auth.json'):
+            with self.subTest(target=target):
+                link.symlink_to(target)
+                with self.assertRaisesRegex(ReviewError, 'Credential directory mount would expose'):
+                    self.credential_bindings(link)
+                link.unlink()
+
+    def test_credential_parent_alias_cannot_hide_a_protected_directory(self):
+        alias = self.repo.parent / 'alias'
+        alias.symlink_to(self.repo, target_is_directory=True)
+        with self.assertRaisesRegex(ReviewError, 'would expose source'):
+            self.credential_bindings(alias / 'auth.json')
+
+    def test_default_cli_directories_inside_home_are_allowed(self):
+        for name, filename in (('.claude', '.credentials.json'), ('.codex', 'auth.json')):
+            with self.subTest(agent=name):
+                directory = Path.home() / name
+                directory.mkdir()
+                bindings = self.credential_bindings(directory / filename)
+                self.assertEqual(bindings[0]['source'], str(directory))
 
     def test_native_macos_uses_default_keychain_with_a_separate_clean_profile(self):
         record = self.prepared()
@@ -193,14 +262,14 @@ class RuntimeTests(RepositoryTest):
     def test_keychain_preflight_reads_metadata_without_exporting_tokens(self):
         settings = {'runtime': 'native', 'auth': 'keychain'}
         with patch('agr.runtime.keychain_account', return_value='fixture-user'), patch('agr.runtime.subprocess.run', return_value=subprocess.CompletedProcess([], 0)) as invoke:
-            self.assertIn('Keychain', runtime.check_credentials(settings))
+            self.assertIn('Keychain', runtime.check_credentials(settings, self.repo))
         args = invoke.call_args.args[0]
         self.assertEqual(args[0], '/usr/bin/security')
         self.assertNotIn('-w', args)
         self.assertNotIn('-g', args)
         with patch('agr.runtime.subprocess.run', return_value=subprocess.CompletedProcess([], 44)):
             with self.assertRaisesRegex(ReviewError, 'Keychain'):
-                runtime.check_credentials(settings)
+                runtime.check_credentials(settings, self.repo)
 
     def test_native_sandbox_and_fallback_do_not_install_dependencies(self):
         with patch('agr.runtime.platform.system', return_value='Linux'), patch('agr.runtime.shutil.which', side_effect=lambda name, **kw: '/usr/bin/' + name if name == 'bwrap' else None):
@@ -349,13 +418,12 @@ class RuntimeTests(RepositoryTest):
             self.assertEqual(client['command'][client['command'].index(flag) + 1], '')
 
     def test_setup_uses_the_saved_client_for_detection_build_and_inspection(self):
-        credentials = self.repo / '.agr/credentials.json'
-        credentials.write_text('{}')
+        credentials = Path(self.fake_runtime()['credentials_file'])
         client = self.fake_docker_client()
         server = {'Server': {'Components': [{'Name': 'Engine'}]}}
         info = {'OSType': 'linux', 'SecurityOptions': ['name=rootless']}
         results = [json.dumps(server), json.dumps(info), '', 'sha256:' + '1' * 64]
-        with patch('agr.runtime.docker_connection', return_value=client), patch('agr.runtime.checked', side_effect=results) as inspect, patch('agr.runtime.subprocess.run') as build:
+        with patch('agr.runtime.git', return_value=str(self.repo / '.git').encode()), patch('agr.runtime.docker_connection', return_value=client), patch('agr.runtime.checked', side_effect=results) as inspect, patch('agr.runtime.subprocess.run') as build:
             managed = runtime.setup(self.repo, runtime.configuration(self.repo, {'credentials_file': str(credentials)}))
         self.assertEqual(managed['docker_client'], client)
         for call in inspect.call_args_list + build.call_args_list:

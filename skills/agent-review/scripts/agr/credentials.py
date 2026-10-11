@@ -30,12 +30,18 @@ def private_directory():
     return Path.home() / '.local/share/sst-agent-review/credentials'
 
 
+def check_filename(agent, path):
+    if agent == 'claude' and Path(path).name != '.credentials.json':
+        raise ReviewError('Claude file authentication requires a file named .credentials.json in a dedicated credential directory; set [claude] credentials_file to that path so refresh updates the shared login')
+
+
 def check(settings):
     agent = settings.get('agent', 'claude')
     if settings['auth'] == 'keychain':
         if not keychain.present(settings['keychain_service'], settings['keychain_account']):
             raise ReviewError('No ' + agent + ' login in macOS Keychain; sign in with ' + agent + ' first')
         return 'macOS Keychain entry present; login checked by managed ' + agent + ' before inference'
+    check_filename(agent, settings['credentials_file'])
     if not Path(settings['credentials_file']).is_file():
         raise ReviewError('No ' + agent + ' credentials file at ' + settings['credentials_file'] + '; sign in with ' + agent + ' or set [' + agent + '] credentials_file')
     label = 'ChatGPT' if agent == 'codex' else 'claude.ai subscription'

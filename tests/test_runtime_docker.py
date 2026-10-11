@@ -32,6 +32,7 @@ class DockerRuntimeTests(RepositoryTest):
                 self.journal.directory.chmod(0o755)
                 output = self.journal.round_directory(record['id']) / 'output'
                 output.chmod(0o777)
+                Path(managed['credentials_file']).parent.chmod(0o777)
                 Path(managed['credentials_file']).chmod(0o666)
                 args = runtime.container_command(self.journal, record['id'])
                 position = args.index(image)

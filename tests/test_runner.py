@@ -3,13 +3,13 @@ import os
 from pathlib import Path
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from contextlib import ExitStack
 
 from .support import RepositoryTest, TmuxTest, fake_launcher, until
 from agr import ReviewError
 from agr.cli import cancel, launch_round
-from agr.runner import claude_command, file_activity, input_ready, subscription_auth, worker
+from agr.runner import claude_command, file_activity, input_ready, observe, subscription_auth, worker
 from agr import tmux, progress, credentials
 
 
@@ -49,6 +49,62 @@ class ActivityTests(RepositoryTest):
         path = self.repo / '.agr/progress.txt'
         path.symlink_to(self.repo / 'app.py')
         self.assertEqual(file_activity([path, self.repo]), [])
+
+
+class StartupFailureTests(RepositoryTest):
+    def setUp(self):
+        super().setUp()
+        self.record = self.prepared()
+        self.directory = self.journal.round_directory(self.record['id'])
+        self.failure = self.directory / 'output/.runtime-error.json'
+
+    def observe_exit(self):
+        process = Mock(returncode=17)
+        process.poll.return_value = 17
+        return observe(process, self.journal, self.record['id'], self.directory, [False])
+
+    def test_valid_startup_failures_keep_their_stage_code_and_message(self):
+        cases = [('startup', 'startup_failed'), *[('authentication', code) for code in
+            ('authentication_failed', 'authentication_timeout', 'login_required', 'subscription_required')]]
+        for stage, code in cases:
+            with self.subTest(code=code):
+                self.failure.write_text(json.dumps({'stage': stage, 'code': code, 'error': 'Safe startup failure'}))
+                self.assertEqual(self.observe_exit(), {'status': 'failed', 'error_stage': stage,
+                    'error_code': code, 'error': 'Safe startup failure', 'exit_code': 17})
+
+    def test_missing_malformed_or_unexpected_startup_errors_use_generic_exit(self):
+        cases = [None, '{', '[]', 'null', '{}', '\udcff',
+                 json.dumps({'error': 'x', 'stage': 'startup'}),
+                 json.dumps({'error': {}, 'stage': 'startup', 'code': 'startup_failed'}),
+                 json.dumps({'error': 'x', 'stage': [], 'code': 'startup_failed'}),
+                 json.dumps({'error': 'x', 'stage': 'startup', 'code': []}),
+                 json.dumps({'error': '', 'stage': 'startup', 'code': 'startup_failed'}),
+                 json.dumps({'error': 'x', 'stage': 'startup', 'code': 'login_required'}),
+                 json.dumps({'error': 'x', 'stage': 'runtime', 'code': 'startup_failed'}),
+                 json.dumps({'error': 'x' * 70000, 'stage': 'startup', 'code': 'startup_failed'})]
+        for value in cases:
+            with self.subTest(value=value[:80] if value else value):
+                if value is None:
+                    self.failure.unlink(missing_ok=True)
+                else:
+                    self.failure.write_bytes(value.encode('utf-8', errors='surrogateescape'))
+                result = self.observe_exit()
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['exit_code'], 17)
+                self.assertIn('exited without a validated completion marker', result['error'])
+                self.assertNotIn('error_code', result)
+
+    def test_runtime_error_after_prompt_submission_is_not_a_startup_failure(self):
+        (self.directory / 'output/.runtime.json').write_text(json.dumps({'auth': {}, 'version': 'test'}))
+        self.failure.write_text(json.dumps({'error': 'Forged login failure', 'stage': 'authentication', 'code': 'login_required'}))
+        process = Mock(returncode=17)
+        process.poll.side_effect = [None, 17]
+        with patch('agr.runner.tmux.capture', return_value=''), patch('agr.runner.input_ready', return_value=True), patch('agr.runner.tmux.send_file') as send, patch('agr.runner.time.sleep'):
+            result = observe(process, self.journal, self.record['id'], self.directory, [False])
+        send.assert_called_once()
+        self.assertTrue(self.journal.round(self.record['id'])['prompt_sent_at'])
+        self.assertNotIn('error_code', result)
+        self.assertIn('exited without a validated completion marker', result['error'])
 
 
 class WorkerCleanupTests(RepositoryTest):
