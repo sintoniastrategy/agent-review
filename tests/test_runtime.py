@@ -62,7 +62,7 @@ class RuntimeTests(RepositoryTest):
         values = {**record["runtime"], "mode": "docker", "docker_client": self.fake_docker_client(), "image": "sha256:" + "1" * 64, "user": "0:0", "executable": "/opt/agr/bin/claude", "python": "/usr/local/bin/python3", "entry": "/opt/agr/scripts/review.py"}
         return self.journal.update_round(record["id"], runtime=values)
 
-    def test_container_mounts_only_source_git_reviewer_output_and_credentials(self):
+    def test_container_mounts_source_git_reviewer_output_and_shared_credential_directory(self):
         record = self.docker_record()
         args = runtime.container_command(self.journal, record["id"])
         mounts = [dict(part.split("=", 1) if "=" in part else (part, True) for part in next(csv.reader([args[index + 1]]))) for index, value in enumerate(args) if value == "--mount"]
@@ -70,8 +70,10 @@ class RuntimeTests(RepositoryTest):
         self.assertTrue(source["readonly"])
         journal = next(item for item in mounts if item["source"] == str(self.journal.round_directory(record["id"]) / "output"))
         self.assertNotIn("readonly", journal)
-        credentials = next(item for item in mounts if item["source"] == record["runtime"]["credentials_file"])
-        self.assertEqual(credentials["target"], "/run/agr/credentials.json")
+        directory = str(Path(record['runtime']['credentials_file']).parent)
+        credentials = next(item for item in mounts if item['source'] == directory)
+        self.assertEqual(credentials['target'], runtime.CONTAINER_AUTH_DIRECTORY)
+        self.assertNotIn('readonly', credentials)
         self.assertEqual(len(mounts), 3)
         self.assertIn("--tty", args)
         self.assertIn("--rm", args)
@@ -105,7 +107,7 @@ class RuntimeTests(RepositoryTest):
             with self.assertRaisesRegex(ReviewError, 'expose private credential storage'):
                 runtime.container_command(self.journal, record['id'])
 
-    def test_native_home_is_private_and_credentials_remain_linked(self):
+    def test_native_home_is_private_and_claude_uses_shared_secure_storage(self):
         record = self.prepared()
         home = self.journal.directory / 'runtime-home'
         config = home / '.claude'
@@ -115,9 +117,10 @@ class RuntimeTests(RepositoryTest):
         for directory in (home, config):
             self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
             self.assertEqual(directory.stat().st_uid, os.getuid())
-        credentials = config / '.credentials.json'
-        self.assertTrue(credentials.is_symlink())
-        self.assertEqual(credentials.resolve(), Path(record['runtime']['credentials_file']))
+        storage = Path(execute.call_args.args[2]['CLAUDE_SECURESTORAGE_CONFIG_DIR'])
+        credentials = storage / '.credentials.json'
+        self.assertEqual(credentials, Path(record['runtime']['credentials_file']))
+        self.assertFalse((config / '.credentials.json').exists())
         self.assertEqual(read_json(credentials), {'test_only': True})
         self.assertFalse((config / 'settings.json').exists())
         self.assertTrue(read_json(home / '.claude.json')['hasCompletedOnboarding'])
@@ -127,6 +130,29 @@ class RuntimeTests(RepositoryTest):
         self.assertTrue(settings['disableAllHooks'])
         self.assertTrue(settings['permissions']['blockReadsOutsideWorkingDirectories'])
         self.assertNotIn('ANTHROPIC_API_KEY', execute.call_args.args[2])
+
+    def test_custom_claude_filename_keeps_its_existing_link_transport(self):
+        record = self.prepared()
+        source = Path(record['runtime']['credentials_file'])
+        renamed = source.with_name('custom.json')
+        source.rename(renamed)
+        self.journal.update_round(record['id'], runtime={**record['runtime'], 'credentials_file': str(renamed)})
+        home = self.repo / '.agr/custom-home'
+        with patch.dict(os.environ, runtime.environment(home, self.repo), clear=True), patch('agr.runtime.checked', return_value=record['runtime']['version']), patch('agr.runner.subscription_auth', return_value={}), patch('agr.runtime.os.execve'):
+            runtime.inner_review(self.journal, record['id'])
+        self.assertEqual((home / '.claude/.credentials.json').resolve(), renamed)
+
+    def test_credential_symlink_mounts_follow_targets_without_pinning_files(self):
+        directory = self.repo / '.agr/login'
+        directory.mkdir()
+        target = self.repo / '.agr/tokens/auth.json'
+        target.parent.mkdir()
+        target.write_text('{}')
+        link = directory / 'auth.json'
+        link.symlink_to('../tokens/auth.json')
+        bindings = [dict(part.split('=', 1) for part in next(csv.reader([value]))) for value in runtime.credential_mounts(link)]
+        self.assertEqual([item['source'] for item in bindings], [str(directory), str(target.parent)])
+        self.assertEqual([item['target'] for item in bindings], ['/run/agr/auth', '/run/agr/tokens'])
 
     def test_native_macos_uses_default_keychain_with_a_separate_clean_profile(self):
         record = self.prepared()

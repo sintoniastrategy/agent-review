@@ -21,7 +21,9 @@ def authentication(repo, values):
     if method not in ('auto', 'file', 'keychain'):
         raise ReviewError('Claude auth must be auto, file or keychain')
     selected = values['credentials_file']
-    directory = Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home() / '.claude').expanduser()
+    storage = os.environ.get('CLAUDE_SECURESTORAGE_CONFIG_DIR')
+    directory = storage if storage is not None else os.environ.get('CLAUDE_CONFIG_DIR')
+    directory = Path(directory or Path.home() / '.claude').expanduser()
     path = Path(selected).expanduser() if selected else directory / '.credentials.json'
     if not path.is_absolute():
         path = Path(repo) / path

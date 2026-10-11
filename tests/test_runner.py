@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import unittest
 from unittest.mock import patch
 from contextlib import ExitStack
@@ -9,7 +10,7 @@ from .support import RepositoryTest, TmuxTest, fake_launcher, until
 from agr import ReviewError
 from agr.cli import cancel, launch_round
 from agr.runner import claude_command, file_activity, input_ready, subscription_auth, worker
-from agr import tmux
+from agr import tmux, progress, credentials
 
 
 class InputPromptTests(unittest.TestCase):
@@ -118,6 +119,32 @@ class RunnerTests(TmuxTest):
         self.assertTrue((directory / 'output' / 'complete.json').is_file())
         self.assertTrue(record['prompt_sent_at'])
         self.assertEqual((directory / 'output' / 'progress.txt').read_text(), 'Preparing the final report')
+
+    def test_login_required_reaches_the_journal_and_human_status_for_both_agents(self):
+        for agent in ('claude', 'codex'):
+            with self.subTest(agent=agent):
+                record = self.prepared('login_required', agent=agent)
+                launch_round(self.journal, record['id'], 300, socket=self.socket, caller_pane='test-host:0.0')
+                finished = self.terminal(record['id'])
+                self.assertEqual(finished['status'], 'failed')
+                self.assertEqual(finished['error_code'], 'login_required')
+                self.assertEqual(finished['error_stage'], 'authentication')
+                self.assertEqual(finished['exit_code'], 1)
+                self.assertIn(agent.capitalize() + ' login required', finished['error'])
+                self.assertNotIn('prompt_sent_at', finished)
+                self.assertIn('login required', progress.describe(self.journal, record['id']))
+                directory = self.journal.round_directory(record['id'])
+                for path in (directory / 'terminal.log', directory / 'output/.runtime-error.json'):
+                    self.assertNotIn('private-token-must-not-appear', path.read_text())
+
+    def test_auth_status_failure_preserves_exit_code_without_echoing_output(self):
+        for result in (subprocess.CompletedProcess([], 7, 'private-token', 'private-token'),
+                       subprocess.CompletedProcess([], 7, '{"loggedIn": true}', 'private-token')):
+            with patch('agr.runner.subprocess.run', return_value=result):
+                with self.assertRaises(credentials.AuthenticationError) as failure:
+                    subscription_auth(['claude'], self.repo)
+                self.assertIn('exit 7', str(failure.exception))
+                self.assertNotIn('private-token', str(failure.exception))
 
     def test_failed_or_incomplete_outputs_never_count_as_success(self):
         for scenario in ('exit', 'missing_result', 'no_report'):

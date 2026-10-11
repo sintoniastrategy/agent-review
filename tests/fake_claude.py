@@ -14,6 +14,10 @@ if sys.argv[-1:] == ['--version']:
     print('2.1.284 (Claude Code)')
     raise SystemExit(0)
 if sys.argv[-2:] == ['auth', 'status']:
+    if scenario == 'login_required':
+        print(json.dumps({'loggedIn': False, 'authMethod': 'none', 'apiProvider': 'firstParty'}))
+        print('private-token-must-not-appear', file=sys.stderr)
+        raise SystemExit(1)
     print(json.dumps({'loggedIn': True, 'authMethod': 'api_key' if scenario == 'paid' else 'claude.ai', 'apiProvider': 'firstParty', 'subscriptionType': 'max'}))
     raise SystemExit(0)
 if not sys.stdin.isatty() or not sys.stdout.isatty() or '-p' in sys.argv:
@@ -21,7 +25,7 @@ if not sys.stdin.isatty() or not sys.stdout.isatty() or '-p' in sys.argv:
 if scenario == 'clean_environment':
     if any(key in os.environ for key in ('ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'BASH_ENV', 'PYTHONPATH')):
         raise SystemExit(15)
-    if not (Path(os.environ['CLAUDE_CONFIG_DIR']) / '.credentials.json').is_file():
+    if not (Path(os.environ.get('CLAUDE_SECURESTORAGE_CONFIG_DIR', os.environ['CLAUDE_CONFIG_DIR'])) / '.credentials.json').is_file():
         raise SystemExit(16)
 
 def read_input():

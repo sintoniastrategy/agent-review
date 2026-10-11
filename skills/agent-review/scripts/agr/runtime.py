@@ -24,6 +24,7 @@ ENTRY = SKILL / "scripts" / "review.py"
 RELEASE = read_json(SKILL / "runtime-release.json")['claude']
 DOWNLOADS = "https://downloads.claude.ai/claude-code-releases"
 CONTAINER_CREDENTIALS = "/run/agr/credentials.json"
+CONTAINER_AUTH_DIRECTORY = '/run/agr/auth'
 
 
 def digest(path):
@@ -300,6 +301,32 @@ def mount(source, destination, readonly=False):
     return output.getvalue()
 
 
+def credential_mounts(path):
+    path = Path(path)
+    destination = Path(CONTAINER_AUTH_DIRECTORY) / path.name
+    result = {}
+    visited = set()
+    while True:
+        if path in visited:
+            raise ReviewError('Credentials symlink cycle: ' + str(path))
+        visited.add(path)
+        directory = path.parent
+        result[str(destination.parent)] = mount(directory.resolve(), destination.parent)
+        if not path.is_symlink():
+            return list(result.values())
+        link = os.readlink(path)
+        path = Path(os.path.abspath(directory / link))
+        destination = Path(os.path.abspath(destination.parent / link))
+
+
+def credential_path(managed):
+    if managed['mode'] == 'docker':
+        if managed.get('auth') == 'keychain':
+            return CONTAINER_CREDENTIALS
+        return str(Path(CONTAINER_AUTH_DIRECTORY) / Path(managed['credentials_file']).name)
+    return managed['credentials_file']
+
+
 def container_command(journal, number):
     record = journal.round(number)
     runtime = record["runtime"]
@@ -319,7 +346,11 @@ def container_command(journal, number):
         args += ["--mount", mount(common, common, True)]
     output = journal.round_directory(number) / "output"
     args += ["--mount", mount(output, output)]
-    args += ["--mount", mount(runtime["credentials_file"], CONTAINER_CREDENTIALS)]
+    if runtime.get('auth') == 'keychain':
+        args += ["--mount", mount(runtime["credentials_file"], CONTAINER_CREDENTIALS)]
+    else:
+        for binding in credential_mounts(runtime['credentials_file']):
+            args += ['--mount', binding]
     for key, value in environment("/tmp/agr-home", repo, container=True, agent=record['reviewer']).items():
         args += ["--env", key + "=" + value]
     args += [runtime["image"], "_review", str(journal.directory), str(number)]
@@ -362,7 +393,7 @@ def inner_review(journal, number):
         if runtime['mode'] == 'native':
             if not runtime.get('package_sha256') or codex.package_digest(Path(executable).parent.parent) != runtime['package_sha256']:
                 raise ReviewError('Managed Codex package changed or is incomplete; prepare a new round')
-        credentials = runtime['credentials_file'] if runtime['mode'] == 'native' else CONTAINER_CREDENTIALS
+        credentials = credential_path(runtime)
         codex.initialize(home, credentials)
         os.chdir(home)
         version = checked([executable, '--version'])
@@ -382,8 +413,11 @@ def inner_review(journal, number):
         os.environ['CLAUDE_SECURESTORAGE_CONFIG_DIR'] = ''
         os.environ['USER'] = runtime['keychain_account']
     else:
-        credentials = runtime["credentials_file"] if runtime["mode"] == "native" else CONTAINER_CREDENTIALS
-        (config / ".credentials.json").symlink_to(credentials)
+        credentials = Path(credential_path(runtime))
+        if runtime.get('auth') != 'keychain' and credentials.name == '.credentials.json':
+            os.environ['CLAUDE_SECURESTORAGE_CONFIG_DIR'] = str(credentials.parent)
+        else:
+            (config / ".credentials.json").symlink_to(credentials)
     executable = runtime["executable"]
     version = checked([executable, "--version"])
     if version.split()[0] != runtime["version"]:

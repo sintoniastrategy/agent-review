@@ -87,6 +87,22 @@ class AgentSettingsTests(RepositoryTest):
         self.assertEqual(settings['auth'], 'file')
         self.assertEqual(settings['credentials_file'], str(profile / '.credentials.json'))
 
+    def test_claude_secure_storage_directory_matches_the_host_cli(self):
+        for override in ('', str(self.repo / '.agr/secure-storage')):
+            with self.subTest(override=override), patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': '/different/profile', 'CLAUDE_SECURESTORAGE_CONFIG_DIR': override}):
+                settings = runtime.configuration(self.repo, {'auth': 'file'})
+                directory = Path(override) if override else Path.home() / '.claude'
+                self.assertEqual(settings['credentials_file'], str(directory / '.credentials.json'))
+
+    def test_file_source_preserves_the_native_filename_and_lock_directory(self):
+        target = self.repo / '.agr/custom-token.json'
+        target.write_text('{}')
+        directory = self.repo / '.agr/native-profile'
+        directory.mkdir()
+        path = directory / '.credentials.json'
+        path.symlink_to(target)
+        self.assertEqual(credentials.file_source(path)['credentials_file'], str(path))
+
 
 class CredentialBridgeTests(RepositoryTest):
     def setUp(self):

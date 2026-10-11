@@ -12,7 +12,14 @@ from .documents import locked
 
 
 def file_source(path):
-    return {'auth': 'file', 'credentials_file': str(Path(path).expanduser().resolve())}
+    path = Path(path).expanduser()
+    return {'auth': 'file', 'credentials_file': str(path.parent.resolve() / path.name)}
+
+
+class AuthenticationError(ReviewError):
+    def __init__(self, message, code='authentication_failed'):
+        super().__init__(message)
+        self.code = code
 
 
 def keychain_source(service, account):
