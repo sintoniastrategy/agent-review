@@ -132,9 +132,17 @@ def subscription_auth(launcher, repo):
     forbidden = [key for key in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_ENDPOINT') if os.environ.get(key)]
     if forbidden:
         raise ReviewError('ChatGPT-only review refuses these environment settings: ' + ', '.join(forbidden))
-    result = subprocess.run(launcher + ['login', 'status'], cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
-    if result.returncode or (result.stdout + result.stderr).strip() != 'Logged in using ChatGPT':
-        raise ReviewError('Codex must report a ChatGPT login; no API fallback and no review was launched')
+    try:
+        result = subprocess.run(launcher + ['login', 'status'], cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise credentials.AuthenticationError('Codex login status timed out after 30 seconds; no review was launched', 'authentication_timeout') from None
+    status = (result.stdout + result.stderr).strip()
+    if status == 'Not logged in':
+        raise credentials.AuthenticationError('Codex login required; run codex login on the host, then prepare a new round', 'login_required')
+    if result.returncode:
+        raise credentials.AuthenticationError('Codex login status failed (exit ' + str(result.returncode) + '); run codex login status on the host; no review was launched')
+    if status != 'Logged in using ChatGPT':
+        raise credentials.AuthenticationError('Codex must report a ChatGPT login; no API fallback and no review was launched', 'subscription_required')
     return {'authMethod': 'chatgpt'}
 
 

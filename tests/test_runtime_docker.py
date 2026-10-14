@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import unittest
 
-from .support import RepositoryTest, ROOT
+from .support import RepositoryTest, ROOT, SCRIPTS
 from agr import runtime
 
 
@@ -17,6 +17,8 @@ class DockerRuntimeTests(RepositoryTest):
         assets.mkdir()
         probe = assets / 'runtime_home_probe.py'
         shutil.copyfile(ROOT / 'tests' / 'runtime_home_probe.py', probe)
+        bundle = assets / 'bundle'
+        shutil.copytree(SCRIPTS.parent, bundle, ignore=shutil.ignore_patterns('__pycache__'))
         for user in ('0:0', '1000:1000'):
             with self.subTest(user=user):
                 record = self.prepared()
@@ -30,13 +32,15 @@ class DockerRuntimeTests(RepositoryTest):
                 self.journal.directory.chmod(0o755)
                 output = self.journal.round_directory(record['id']) / 'output'
                 output.chmod(0o777)
+                Path(managed['credentials_file']).parent.chmod(0o777)
                 Path(managed['credentials_file']).chmod(0o666)
                 args = runtime.container_command(self.journal, record['id'])
                 position = args.index(image)
                 args = [argument for argument in args[:position] if argument not in {'--interactive', '--tty'}]
                 args += [
                     '--pull', 'never', '--network', 'none', '--entrypoint', 'python3',
-                    '--env', 'PYTHONPATH=/opt/agr/scripts',
+                    '--env', 'PYTHONPATH=/opt/agr/bundle/scripts',
+                    '--mount', runtime.mount(bundle, '/opt/agr/bundle', True),
                     '--mount', runtime.mount(probe, '/opt/agr/runtime_home_probe.py', True),
                     image, '/opt/agr/runtime_home_probe.py', str(self.journal.directory), str(record['id']),
                 ]
@@ -44,6 +48,6 @@ class DockerRuntimeTests(RepositoryTest):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(json.loads(result.stdout), {
                     'uid': int(user.split(':')[0]), 'private_home': True, 'state_writable': True,
-                    'credentials_linked': True, 'model_launched': False,
+                    'credentials_shared': True, 'model_launched': False,
                 })
                 self.journal.update_round(record['id'], status='completed')

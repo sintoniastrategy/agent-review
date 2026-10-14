@@ -5,7 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import ReviewError, now, read_json
+from . import ReviewError, now, read_json, write_json
+from .credentials import AuthenticationError
 from .prompts import prepare, previous_review
 from .source import resolve, root, same_source, snapshot
 from .store import ACTIVE, Journal
@@ -181,7 +182,7 @@ def execute(args):
         selected = configuration.load_review(repo, {key: getattr(args, key) for key in configuration.REVIEW_KEYS})
         settings = runtime.configuration(repo, agent=selected['agent'], overrides={'runtime': args.runtime})
         paths = runtime.prerequisites(settings)
-        auth = runtime.check_credentials(settings)
+        auth = runtime.check_credentials(settings, repo)
         base = args.base
         session = repo / '.agr/session.json'
         if base is None and session.is_file():
@@ -321,6 +322,7 @@ def execute(args):
 def main(argv=None):
     os.umask(0o077)
     argv = list(sys.argv[1:] if argv is None else argv)
+    runtime_output = None
     try:
         if argv and argv[0] == 'publish':
             publish_parser = argparse.ArgumentParser(description='Publish one Markdown draft or finish this review')
@@ -338,7 +340,10 @@ def main(argv=None):
             if len(argv) != 3:
                 raise ReviewError("Internal command expects a journal path and round number")
             if argv[0] == "_review":
-                runtime.inner_review(Journal(argv[1], readonly=True), int(argv[2]))
+                journal = Journal(argv[1], readonly=True)
+                number = int(argv[2])
+                runtime_output = journal.round_directory(number) / 'output'
+                runtime.inner_review(journal, number)
                 return 0
             from .runner import worker
             return worker(argv[1], int(argv[2]))
@@ -349,5 +354,9 @@ def main(argv=None):
         print(result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (ReviewError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        if runtime_output is not None:
+            failure = {'error': str(error), 'stage': 'authentication' if isinstance(error, AuthenticationError) else 'startup',
+                'code': error.code if isinstance(error, AuthenticationError) else 'startup_failed'}
+            write_json(runtime_output / '.runtime-error.json', failure)
         print(json.dumps({"error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1

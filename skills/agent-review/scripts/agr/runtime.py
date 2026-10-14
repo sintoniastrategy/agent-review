@@ -24,6 +24,7 @@ ENTRY = SKILL / "scripts" / "review.py"
 RELEASE = read_json(SKILL / "runtime-release.json")['claude']
 DOWNLOADS = "https://downloads.claude.ai/claude-code-releases"
 CONTAINER_CREDENTIALS = "/run/agr/credentials.json"
+CONTAINER_AUTH_DIRECTORY = '/run/agr/auth'
 
 
 def digest(path):
@@ -101,12 +102,15 @@ def keychain_account():
     return agents.adapter('claude').account()
 
 
-def check_credentials(settings):
+def check_credentials(settings, repo):
     selected = {**settings, 'auth': auth_source(settings)}
     if selected['auth'] == 'keychain':
         selected.setdefault('keychain_service', 'Claude Code-credentials')
         selected.setdefault('keychain_account', keychain_account())
-    return credentials.check(selected)
+    result = credentials.check(selected)
+    if selected['auth'] == 'file' and settings['runtime'] == 'docker':
+        credential_mounts(settings['credentials_file'], repo)
+    return result
 
 
 def prerequisites(settings):
@@ -239,7 +243,7 @@ def docker_identity(client=None):
 
 def setup(repo, settings):
     prerequisites(settings)
-    check_credentials(settings)
+    check_credentials(settings, repo)
     agent = settings.get('agent', 'claude')
     release = codex.RELEASE if agent == 'codex' else RELEASE
     record = {"mode": settings["runtime"], 'agent': agent, "version": release["version"], 'auth': auth_source(settings), "credentials_file": settings['credentials_file'], "window_name": settings["window_name"]}
@@ -300,6 +304,46 @@ def mount(source, destination, readonly=False):
     return output.getvalue()
 
 
+def credential_mounts(path, repo, common=None):
+    path = Path(path)
+    repo = Path(repo).resolve()
+    common = Path(common or git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir').decode().strip()).resolve()
+    protected = (('review journal', repo / '.agr'), ('source', repo), ('Git', common),
+                 ('private credential storage', credentials.private_directory().resolve()))
+    home = Path.home().resolve()
+    destination = Path(CONTAINER_AUTH_DIRECTORY) / path.name
+    result = {}
+    visited = set()
+    while True:
+        try:
+            directory = path.parent.resolve()
+        except (OSError, RuntimeError) as error:
+            raise ReviewError('Cannot resolve credential directory: ' + str(path.parent)) from error
+        path = directory / path.name
+        if path in visited or len(visited) >= 40:
+            raise ReviewError('Credentials symlink cycle: ' + str(path))
+        visited.add(path)
+        blocked = 'HOME' if home.is_relative_to(directory) else next((label for label, location in protected
+            if directory.is_relative_to(location)), None)
+        blocked = blocked or next((label for label, location in protected if location.is_relative_to(directory)), None)
+        if blocked:
+            raise ReviewError('Credential directory mount would expose ' + blocked + ': ' + str(directory) + '; use a dedicated credential directory outside source, Git, the review journal and private credential storage')
+        result[str(destination.parent)] = mount(directory, destination.parent)
+        if not path.is_symlink():
+            return list(result.values())
+        link = os.readlink(path)
+        path = directory / link
+        destination = Path(os.path.abspath(destination.parent / link))
+
+
+def credential_path(managed):
+    if managed['mode'] == 'docker':
+        if managed.get('auth') == 'keychain':
+            return CONTAINER_CREDENTIALS
+        return str(Path(CONTAINER_AUTH_DIRECTORY) / Path(managed['credentials_file']).name)
+    return managed['credentials_file']
+
+
 def container_command(journal, number):
     record = journal.round(number)
     runtime = record["runtime"]
@@ -319,7 +363,11 @@ def container_command(journal, number):
         args += ["--mount", mount(common, common, True)]
     output = journal.round_directory(number) / "output"
     args += ["--mount", mount(output, output)]
-    args += ["--mount", mount(runtime["credentials_file"], CONTAINER_CREDENTIALS)]
+    if runtime.get('auth') == 'keychain':
+        args += ["--mount", mount(runtime["credentials_file"], CONTAINER_CREDENTIALS)]
+    else:
+        for binding in credential_mounts(runtime['credentials_file'], repo, common):
+            args += ['--mount', binding]
     for key, value in environment("/tmp/agr-home", repo, container=True, agent=record['reviewer']).items():
         args += ["--env", key + "=" + value]
     args += [runtime["image"], "_review", str(journal.directory), str(number)]
@@ -362,8 +410,8 @@ def inner_review(journal, number):
         if runtime['mode'] == 'native':
             if not runtime.get('package_sha256') or codex.package_digest(Path(executable).parent.parent) != runtime['package_sha256']:
                 raise ReviewError('Managed Codex package changed or is incomplete; prepare a new round')
-        credentials = runtime['credentials_file'] if runtime['mode'] == 'native' else CONTAINER_CREDENTIALS
-        codex.initialize(home, credentials)
+        credential_file = credential_path(runtime)
+        codex.initialize(home, credential_file)
         os.chdir(home)
         version = checked([executable, '--version'])
         if version != 'codex-cli ' + runtime['version']:
@@ -382,8 +430,12 @@ def inner_review(journal, number):
         os.environ['CLAUDE_SECURESTORAGE_CONFIG_DIR'] = ''
         os.environ['USER'] = runtime['keychain_account']
     else:
-        credentials = runtime["credentials_file"] if runtime["mode"] == "native" else CONTAINER_CREDENTIALS
-        (config / ".credentials.json").symlink_to(credentials)
+        credential_file = Path(credential_path(runtime))
+        if runtime.get('auth') != 'keychain':
+            credentials.check_filename('claude', credential_file)
+            os.environ['CLAUDE_SECURESTORAGE_CONFIG_DIR'] = str(credential_file.parent)
+        else:
+            (config / ".credentials.json").symlink_to(credential_file)
     executable = runtime["executable"]
     version = checked([executable, "--version"])
     if version.split()[0] != runtime["version"]:

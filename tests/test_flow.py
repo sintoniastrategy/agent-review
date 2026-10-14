@@ -139,12 +139,12 @@ class FlowTests(RepositoryTest):
     def test_preflight_checks_prerequisites_without_installing_or_launching(self):
         managed = self.fake_runtime()
         self.write_settings({'runtime': 'native', 'credentials_file': managed['credentials_file']})
-        with patch('agr.cli.shutil.which', side_effect=lambda name, **kwargs: '/tools/' + name), patch('agr.cli.runtime.setup') as setup:
+        with patch('agr.runtime.shutil.which', side_effect=lambda name, **kwargs: '/tools/' + name), patch('agr.cli.runtime.setup') as setup:
             result = self.command('preflight', '--base', 'base')
             self.assertEqual(result['scope'], 'full')
-            self.assertEqual(result['tools'], {'git': '/tools/git', 'tmux': '/tools/tmux'})
+            self.assertEqual(result['tools'], {'git': '/tools/git', 'tmux': '/tools/tmux', 'curl': '/tools/curl'})
             setup.assert_not_called()
-        with patch('agr.cli.shutil.which', return_value=None):
+        with patch('agr.runtime.shutil.which', return_value=None):
             with self.assertRaisesRegex(ReviewError, 'Missing required tools'):
                 self.command('preflight', '--base', 'base')
 

@@ -24,9 +24,11 @@ for directory in (home, config):
     write_json(directory / 'write-probe.json', {'test_only': 1})
     write_json(directory / 'write-probe.json', {'test_only': 2})
     assert read_json(directory / 'write-probe.json') == {'test_only': 2}
-assert (config / '.credentials.json').is_symlink()
-assert read_json(config / '.credentials.json') == {'test_only': True}
-with (config / '.credentials.json').open('r+') as credentials:
+storage = Path(os.environ['CLAUDE_SECURESTORAGE_CONFIG_DIR'])
+assert storage != config
+assert not (config / '.credentials.json').exists()
+assert read_json(storage / '.credentials.json') == {'test_only': True}
+with (storage / '.credentials.json').open('r+') as credentials:
     value = credentials.read()
     credentials.seek(0)
     credentials.write(value)
@@ -35,4 +37,4 @@ assert read_json(config / '.claude.json') == read_json(home / '.claude.json')
 assert not (config / 'settings.json').exists()
 assert read_json(journal.round_directory(number) / 'output' / '.runtime.json')['auth'] == auth
 (config / 'projects').mkdir()
-print(json.dumps({'uid': os.getuid(), 'private_home': True, 'state_writable': True, 'credentials_linked': True, 'model_launched': False}))
+print(json.dumps({'uid': os.getuid(), 'private_home': True, 'state_writable': True, 'credentials_shared': True, 'model_launched': False}))

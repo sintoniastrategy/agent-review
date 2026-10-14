@@ -13,6 +13,9 @@ if sys.argv[-1:] == ['--version']:
     print('codex-cli 0.160.0')
     raise SystemExit(0)
 if sys.argv[-2:] == ['login', 'status']:
+    if scenario == 'login_required':
+        print('Not logged in', file=sys.stderr)
+        raise SystemExit(1)
     print('Logged in using an API key' if scenario == 'paid' else 'Logged in using ChatGPT', file=sys.stderr)
     raise SystemExit(0)
 if not sys.stdin.isatty() or not sys.stdout.isatty() or 'exec' in sys.argv:

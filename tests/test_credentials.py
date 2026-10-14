@@ -87,6 +87,53 @@ class AgentSettingsTests(RepositoryTest):
         self.assertEqual(settings['auth'], 'file')
         self.assertEqual(settings['credentials_file'], str(profile / '.credentials.json'))
 
+    def test_claude_secure_storage_directory_matches_the_host_cli(self):
+        for override in ('', str(self.repo / '.agr/secure-storage')):
+            with self.subTest(override=override), patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': '/different/profile', 'CLAUDE_SECURESTORAGE_CONFIG_DIR': override}):
+                settings = runtime.configuration(self.repo, {'auth': 'file'})
+                directory = Path(override) if override else Path.home() / '.claude'
+                self.assertEqual(settings['credentials_file'], str(directory / '.credentials.json'))
+
+    def test_file_source_preserves_the_native_filename_and_lock_directory(self):
+        target = self.repo / '.agr/custom-token.json'
+        target.write_text('{}')
+        directory = self.repo / '.agr/native-profile'
+        directory.mkdir()
+        path = directory / '.credentials.json'
+        path.symlink_to(target)
+        self.assertEqual(credentials.file_source(path)['credentials_file'], str(path))
+
+    def test_preflight_rejects_custom_claude_filename_in_both_runtimes(self):
+        path = Path(self.fake_runtime()['credentials_file']).with_name('custom.json')
+        path.write_text('{}')
+        self.write_settings({'claude': {'credentials_file': str(path)}})
+        for mode in ('native', 'docker'):
+            with self.subTest(mode=mode), patch('agr.runtime.docker_connection') as docker:
+                with self.assertRaisesRegex(ReviewError, 'requires a file named .credentials.json'):
+                    self.command('preflight', '--base', 'base', '--runtime', mode)
+                docker.assert_not_called()
+
+    def test_preflight_accepts_native_claude_symlink_filename(self):
+        path = Path(self.fake_runtime()['credentials_file'])
+        target = path.with_name('custom.json')
+        path.rename(target)
+        path.symlink_to(target.name)
+        self.write_settings({'claude': {'credentials_file': str(path)}})
+        with patch('agr.runtime.docker_identity', return_value={'docker_mode': 'rootless', 'user': '0:0'}):
+            result = self.command('preflight', '--base', 'base')
+        self.assertEqual(result['credentials_file'], str(path))
+
+    def test_preflight_and_setup_reject_source_credentials_before_docker_access(self):
+        path = self.repo / 'auth.json'
+        path.write_text('{}')
+        self.write_settings({'agent': 'codex', 'codex': {'credentials_file': 'auth.json'}})
+        with patch('agr.runtime.docker_connection') as docker:
+            with self.assertRaisesRegex(ReviewError, 'Credential directory mount would expose source'):
+                self.command('preflight', '--base', 'base')
+            with self.assertRaisesRegex(ReviewError, 'Credential directory mount would expose source'):
+                runtime.setup(self.repo, runtime.configuration(self.repo))
+            docker.assert_not_called()
+
 
 class CredentialBridgeTests(RepositoryTest):
     def setUp(self):

@@ -1,15 +1,16 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from contextlib import ExitStack
 
 from .support import RepositoryTest, TmuxTest, fake_launcher, until
 from agr import ReviewError
 from agr.cli import cancel, launch_round
-from agr.runner import claude_command, file_activity, input_ready, subscription_auth, worker
-from agr import tmux
+from agr.runner import claude_command, file_activity, input_ready, observe, subscription_auth, worker
+from agr import tmux, progress, credentials
 
 
 class InputPromptTests(unittest.TestCase):
@@ -48,6 +49,62 @@ class ActivityTests(RepositoryTest):
         path = self.repo / '.agr/progress.txt'
         path.symlink_to(self.repo / 'app.py')
         self.assertEqual(file_activity([path, self.repo]), [])
+
+
+class StartupFailureTests(RepositoryTest):
+    def setUp(self):
+        super().setUp()
+        self.record = self.prepared()
+        self.directory = self.journal.round_directory(self.record['id'])
+        self.failure = self.directory / 'output/.runtime-error.json'
+
+    def observe_exit(self):
+        process = Mock(returncode=17)
+        process.poll.return_value = 17
+        return observe(process, self.journal, self.record['id'], self.directory, [False])
+
+    def test_valid_startup_failures_keep_their_stage_code_and_message(self):
+        cases = [('startup', 'startup_failed'), *[('authentication', code) for code in
+            ('authentication_failed', 'authentication_timeout', 'login_required', 'subscription_required')]]
+        for stage, code in cases:
+            with self.subTest(code=code):
+                self.failure.write_text(json.dumps({'stage': stage, 'code': code, 'error': 'Safe startup failure'}))
+                self.assertEqual(self.observe_exit(), {'status': 'failed', 'error_stage': stage,
+                    'error_code': code, 'error': 'Safe startup failure', 'exit_code': 17})
+
+    def test_missing_malformed_or_unexpected_startup_errors_use_generic_exit(self):
+        cases = [None, '{', '[]', 'null', '{}', '\udcff',
+                 json.dumps({'error': 'x', 'stage': 'startup'}),
+                 json.dumps({'error': {}, 'stage': 'startup', 'code': 'startup_failed'}),
+                 json.dumps({'error': 'x', 'stage': [], 'code': 'startup_failed'}),
+                 json.dumps({'error': 'x', 'stage': 'startup', 'code': []}),
+                 json.dumps({'error': '', 'stage': 'startup', 'code': 'startup_failed'}),
+                 json.dumps({'error': 'x', 'stage': 'startup', 'code': 'login_required'}),
+                 json.dumps({'error': 'x', 'stage': 'runtime', 'code': 'startup_failed'}),
+                 json.dumps({'error': 'x' * 70000, 'stage': 'startup', 'code': 'startup_failed'})]
+        for value in cases:
+            with self.subTest(value=value[:80] if value else value):
+                if value is None:
+                    self.failure.unlink(missing_ok=True)
+                else:
+                    self.failure.write_bytes(value.encode('utf-8', errors='surrogateescape'))
+                result = self.observe_exit()
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['exit_code'], 17)
+                self.assertIn('exited without a validated completion marker', result['error'])
+                self.assertNotIn('error_code', result)
+
+    def test_runtime_error_after_prompt_submission_is_not_a_startup_failure(self):
+        (self.directory / 'output/.runtime.json').write_text(json.dumps({'auth': {}, 'version': 'test'}))
+        self.failure.write_text(json.dumps({'error': 'Forged login failure', 'stage': 'authentication', 'code': 'login_required'}))
+        process = Mock(returncode=17)
+        process.poll.side_effect = [None, 17]
+        with patch('agr.runner.tmux.capture', return_value=''), patch('agr.runner.input_ready', return_value=True), patch('agr.runner.tmux.send_file') as send, patch('agr.runner.time.sleep'):
+            result = observe(process, self.journal, self.record['id'], self.directory, [False])
+        send.assert_called_once()
+        self.assertTrue(self.journal.round(self.record['id'])['prompt_sent_at'])
+        self.assertNotIn('error_code', result)
+        self.assertIn('exited without a validated completion marker', result['error'])
 
 
 class WorkerCleanupTests(RepositoryTest):
@@ -118,6 +175,32 @@ class RunnerTests(TmuxTest):
         self.assertTrue((directory / 'output' / 'complete.json').is_file())
         self.assertTrue(record['prompt_sent_at'])
         self.assertEqual((directory / 'output' / 'progress.txt').read_text(), 'Preparing the final report')
+
+    def test_login_required_reaches_the_journal_and_human_status_for_both_agents(self):
+        for agent in ('claude', 'codex'):
+            with self.subTest(agent=agent):
+                record = self.prepared('login_required', agent=agent)
+                launch_round(self.journal, record['id'], 300, socket=self.socket, caller_pane='test-host:0.0')
+                finished = self.terminal(record['id'])
+                self.assertEqual(finished['status'], 'failed')
+                self.assertEqual(finished['error_code'], 'login_required')
+                self.assertEqual(finished['error_stage'], 'authentication')
+                self.assertEqual(finished['exit_code'], 1)
+                self.assertIn(agent.capitalize() + ' login required', finished['error'])
+                self.assertNotIn('prompt_sent_at', finished)
+                self.assertIn('login required', progress.describe(self.journal, record['id']))
+                directory = self.journal.round_directory(record['id'])
+                for path in (directory / 'terminal.log', directory / 'output/.runtime-error.json'):
+                    self.assertNotIn('private-token-must-not-appear', path.read_text())
+
+    def test_auth_status_failure_preserves_exit_code_without_echoing_output(self):
+        for result in (subprocess.CompletedProcess([], 7, 'private-token', 'private-token'),
+                       subprocess.CompletedProcess([], 7, '{"loggedIn": true}', 'private-token')):
+            with patch('agr.runner.subprocess.run', return_value=result):
+                with self.assertRaises(credentials.AuthenticationError) as failure:
+                    subscription_auth(['claude'], self.repo)
+                self.assertIn('exit 7', str(failure.exception))
+                self.assertNotIn('private-token', str(failure.exception))
 
     def test_failed_or_incomplete_outputs_never_count_as_success(self):
         for scenario in ('exit', 'missing_result', 'no_report'):

@@ -44,7 +44,7 @@ class RepositoryTest(unittest.TestCase):
         clean = {key: value for key, value in os.environ.items() if key not in {
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
-            'OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_ENDPOINT', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+            'OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_ENDPOINT', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR',
             "GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE",
         }}
         clean['HOME'] = str(home)
@@ -84,7 +84,9 @@ class RepositoryTest(unittest.TestCase):
         binary.parent.mkdir(parents=True, exist_ok=True)
         binary.write_text("#!" + sys.executable + "\nimport runpy\nimport sys\nsys.argv[1:1] = [" + repr(scenario) + "]\nrunpy.run_path(" + repr(str(ROOT / 'tests' / ('fake_' + agent + '.py'))) + ", run_name='__main__')\n")
         binary.chmod(0o700)
-        credentials = directory / "credentials.json"
+        credential_directory = Path(self.temporary.name) / 'credentials' / scenario / agent
+        credential_directory.mkdir(parents=True, exist_ok=True)
+        credentials = credential_directory / ('auth.json' if agent == 'codex' else '.credentials.json')
         credentials.write_text(json.dumps({"test_only": True}))
         version = codex.RELEASE['version'] if agent == 'codex' else runtime.RELEASE['version']
         managed = {"mode": "native", 'agent': agent, "version": version, "credentials_file": str(credentials), "window_name": "test/feature", "executable": str(binary), "sha256": runtime.digest(binary), "python": sys.executable, "entry": str(SCRIPTS / "review.py")}

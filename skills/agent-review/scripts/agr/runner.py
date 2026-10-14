@@ -19,15 +19,22 @@ def subscription_auth(launcher, repo):
     forbidden += [name for name in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY") if os.environ.get(name, "").lower() not in ("", "0", "false")]
     if forbidden:
         raise ReviewError("Subscription-only review refuses these environment settings: " + ", ".join(forbidden))
-    result = subprocess.run(launcher + ["auth", "status"], cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
-    if result.returncode:
-        raise ReviewError("Claude auth status failed; no review was launched")
+    try:
+        result = subprocess.run(launcher + ["auth", "status"], cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise credentials.AuthenticationError('Claude auth status timed out after 30 seconds; no review was launched', 'authentication_timeout') from None
     try:
         auth = json.loads(result.stdout)
     except ValueError as error:
-        raise ReviewError("Claude auth status did not return JSON") from error
+        if result.returncode:
+            raise credentials.AuthenticationError('Claude auth status failed (exit ' + str(result.returncode) + '); run claude auth status on the host; no review was launched') from None
+        raise credentials.AuthenticationError('Claude auth status did not return JSON') from error
+    if isinstance(auth, dict) and auth.get('loggedIn') is False:
+        raise credentials.AuthenticationError('Claude login required; run claude auth login on the host, then prepare a new round', 'login_required')
+    if result.returncode:
+        raise credentials.AuthenticationError('Claude auth status failed (exit ' + str(result.returncode) + '); run claude auth status on the host; no review was launched')
     if not isinstance(auth, dict) or auth.get("loggedIn") is not True or auth.get("authMethod") != "claude.ai" or auth.get("apiProvider") != "firstParty" or not auth.get("subscriptionType"):
-        raise ReviewError("Claude must report an active first-party claude.ai subscription; no API fallback")
+        raise credentials.AuthenticationError("Claude must report an active first-party claude.ai subscription; no API fallback", 'subscription_required')
     return {key: auth[key] for key in ("authMethod", "apiProvider", "subscriptionType")}
 
 
@@ -79,6 +86,22 @@ def file_activity(paths):
     return result
 
 
+def startup_failure(path):
+    try:
+        with path.open('rb') as source:
+            details = json.loads(source.read(65537))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    if not isinstance(details, dict) or any(not isinstance(details.get(key), str) or not details[key].strip()
+                                           for key in ('error', 'stage', 'code')):
+        return None
+    allowed = {'authentication': {'authentication_failed', 'authentication_timeout', 'login_required', 'subscription_required'},
+               'startup': {'startup_failed'}}
+    if len(details['error']) > 8192 or details['code'] not in allowed.get(details['stage'], set()):
+        return None
+    return details
+
+
 def observe(process, journal, number, directory, interrupted, bridge=None):
     record = journal.round(number)
     output = directory / 'output'
@@ -98,6 +121,10 @@ def observe(process, journal, number, directory, interrupted, bridge=None):
             reporting.complete(output)
             return {'status': 'completed'}
         if process.poll() is not None:
+            details = startup_failure(output / '.runtime-error.json') if not submitted else None
+            if details:
+                return {'status': 'failed', 'error': details['error'], 'error_stage': details['stage'],
+                    'error_code': details['code'], 'exit_code': process.returncode}
             return {'status': 'failed', 'error': 'Interactive ' + record['reviewer'].capitalize() + ' exited without a validated completion marker', 'exit_code': process.returncode}
         paths = [directory / 'terminal.log', output / 'progress.txt'] + reporting.files(output)
         activity = file_activity(paths)
